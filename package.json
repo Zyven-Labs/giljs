@@ -1,0 +1,23 @@
+{
+  "name": "@zyven/giljs",
+  "version": "1.0.0",
+  "description": "Node.js native addon for libgil — the Gnosis Intent Language runtime",
+  "main": "lib/index.js",
+  "gypfile": true,
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp rebuild",
+    "test": "cd libgil && make -s test && cd .. && node test/test.js"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.3.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^11.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zyven-Labs/giljs.git"
+  },
+  "license": "MIT"
+}
