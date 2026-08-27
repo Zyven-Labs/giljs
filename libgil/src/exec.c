@@ -661,9 +661,31 @@ static int exec_stmts(const Stmt *stmts, int count, Env *env,
         if (stmts[i].kind == STMT_ASSIGN) {
             if (exec_assign(&stmts[i], env, frontier, buf) != 0)
                 return -1;
-        } else {
-            /* STMT_WHEN */
+        } else if (stmts[i].kind == STMT_WHEN) {
             if (exec_when(&stmts[i], env, frontier, buf) != 0)
+                return -1;
+        } else {
+            /* STMT_REPEAT: execute body once (no convergence loop here).
+               The repeat body may contain assign, when, or nested repeat
+               statements; nested repeats also execute their body once. */
+            if (exec_stmts(stmts[i].repeat.body, stmts[i].repeat.body_count,
+                           env, frontier, buf) != 0)
+                return -1;
+        }
+    }
+    return 0;
+}
+
+/* Run all top-level repeat block bodies once each, accumulating
+   assignments into buf. Returns 0 on success, -1 on error. */
+static int exec_repeat_bodies(const Stmt *stmts, int count, Env *env,
+                              const GilFrontier *frontier, AssignBuf *buf)
+{
+    int i;
+    for (i = 0; i < count; i++) {
+        if (stmts[i].kind == STMT_REPEAT) {
+            if (exec_stmts(stmts[i].repeat.body, stmts[i].repeat.body_count,
+                           env, frontier, buf) != 0)
                 return -1;
         }
     }
@@ -696,7 +718,61 @@ int gil_intent_execute(GilIntent *intent, GilFrontier *frontier,
             env_put(&env, it->params[i], args[i]);
     }
 
-    /* Convergence loop. */
+    /* ------------------------------------------------------------------ */
+    /* PHASE 1 — First pass: evaluate all statements (including repeat     */
+    /* body) exactly once, then atomically commit.                         */
+    /* ------------------------------------------------------------------ */
+    {
+        AssignBuf buf;
+        size_t    i;
+
+        assignbuf_init(&buf);
+
+        if (exec_stmts(it->stmts, it->stmt_count,
+                       &env, frontier, &buf) != 0) {
+            assignbuf_free(&buf);
+            return -1;
+        }
+
+        if (buf.count > 0) {
+            if (assignbuf_resolve(&buf) != 0) {
+                assignbuf_free(&buf);
+                return -1;
+            }
+
+            gil_frontier_lock(frontier);
+            for (i = 0; i < buf.count; i++) {
+                AssignEntry *e = &buf.entries[i];
+                GilVal old = gil_frontier_get(frontier, e->pred_name,
+                    (const char**)e->pred_args, e->pred_argc);
+                GilVal neu = e->value;
+                if (old != neu) {
+                    gil_frontier_set(frontier, e->pred_name,
+                        (const char**)e->pred_args, e->pred_argc, neu);
+                }
+            }
+            gil_frontier_unlock(frontier);
+        }
+
+        assignbuf_free(&buf);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* PHASE 2 — Repeat convergence: iterate all top-level repeat block   */
+    /* bodies together until no new assignments are produced.              */
+    /* ------------------------------------------------------------------ */
+    {
+        int have_repeat = 0;
+        int ri;
+        for (ri = 0; ri < it->stmt_count; ri++) {
+            if (it->stmts[ri].kind == STMT_REPEAT) {
+                have_repeat = 1;
+                break;
+            }
+        }
+        if (!have_repeat) return 0;
+    }
+
     for (;;) {
         AssignBuf buf;
         size_t    i;
@@ -704,27 +780,22 @@ int gil_intent_execute(GilIntent *intent, GilFrontier *frontier,
 
         assignbuf_init(&buf);
 
-        /* Evaluate all statements, collect assignments.
-           Frontier is NOT modified during evaluation. */
-        if (exec_stmts(it->stmts, it->stmt_count,
-                       &env, frontier, &buf) != 0) {
+        if (exec_repeat_bodies(it->stmts, it->stmt_count,
+                               &env, frontier, &buf) != 0) {
             assignbuf_free(&buf);
             return -1;
         }
 
-        /* If no assignments, converged. */
         if (buf.count == 0) {
             assignbuf_free(&buf);
             return 0;
         }
 
-        /* Resolve conflicts. */
         if (assignbuf_resolve(&buf) != 0) {
             assignbuf_free(&buf);
             return -1;
         }
 
-        /* Lock frontier, commit atomically, unlock. */
         gil_frontier_lock(frontier);
         for (i = 0; i < buf.count; i++) {
             AssignEntry *e = &buf.entries[i];
@@ -741,7 +812,6 @@ int gil_intent_execute(GilIntent *intent, GilFrontier *frontier,
 
         assignbuf_free(&buf);
 
-        /* If nothing changed, converged. */
         if (!changed) return 0;
     }
 }

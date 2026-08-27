@@ -45,8 +45,13 @@ parameter_list     ::= identifier { "," identifier }
 
 statement          ::= assignment
                      | when_block
+                     | repeat_block
 
 when_block         ::= "when" expression "do"
+                       { statement }
+                       "end"
+
+repeat_block       ::= "repeat"
                        { statement }
                        "end"
 
@@ -189,26 +194,38 @@ A variable used in arithmetic must be bound (by an intent parameter or a `when` 
 
 ## 7. Intent Execution
 
-An intent executes iteratively until convergence:
+An intent executes as a single pass:
 
 1. Bind intent parameters from the invocation arguments.
-2. Repeat until no assignments are produced:
-   a. Evaluate all statements against the current frontier — the frontier is **not** modified during evaluation.
-   b. Collect all generated assignments.
-   c. Resolve assignments per Section 11 (Assignment Resolution).
-   d. Commit assignments atomically to produce the next frontier.
-3. If the frontier changed, repeat from step 2.
-4. Terminate when no assignments are produced (stable state).
+2. Evaluate all statements against the current frontier — the frontier is **not** modified during evaluation.
+3. Collect all generated assignments.
+4. Resolve conflicts per Section 11 (Assignment Resolution).
+5. Commit assignments atomically to produce the next frontier.
 
-Multiple intent invocations execute sequentially in the order they are received. Each invocation must reach a stable state before the next begins.
+Statements inside `repeat` blocks (see §8) perform their own iterative convergence; the intent body itself executes exactly once.
 
-Termination is the intent author's responsibility. The language provides no iteration limit, cycle detection, or timeout.
+Multiple intent invocations execute sequentially in the order they are received. Each invocation completes before the next begins.
+
+Termination of `repeat` loops is the intent author's responsibility. The language provides no iteration limit, cycle detection, or timeout — a `repeat` body that always produces assignments will loop forever.
 
 ---
 
 ## 8. Statements
 
-A statement is either an assignment or a `when` block. Statements may appear anywhere inside an intent or `when` block. Nested `when` blocks are permitted.
+A statement is an assignment, a `when` block, or a `repeat` block. Statements may appear anywhere inside an intent, `when` block, or `repeat` block.
+
+### Repeat block
+
+A `repeat` block executes its body repeatedly until the body produces no new assignments:
+
+1. Evaluate all body statements against the current frontier.
+2. Collect all generated assignments.
+3. Resolve conflicts.
+4. Commit assignments atomically.
+5. If any predicate value changed, repeat from step 1.
+6. Otherwise, exit the loop.
+
+Each iteration of `repeat` uses the same snapshot-commit semantics as the intent itself. The body sees the frontier from the previous iteration's commit. Nested `repeat` blocks and `when` blocks inside `repeat` are permitted.
 
 ---
 
@@ -322,9 +339,11 @@ intent propagate_active(Node)
 
     activated[Node] <= true
 
-    when activated[A] do
-        when connected[A, B] do
-            activated[B] <= true
+    repeat
+        when activated[A] do
+            when connected[A, B] do
+                activated[B] <= true
+            end
         end
     end
 
@@ -352,9 +371,10 @@ Gil defines:
 - Predicates as frontier propositions
 - Intents as transitions
 - When blocks as conditional execution
+- Repeat blocks as explicit convergence loops
 - `<=` as synchronous non-blocking assignment
 - Atomic commit as a frontier transition
-- Iterative execution until convergence
+- Single-pass intent execution (repeat blocks loop independently)
 - Integer constants and arithmetic, matched as predicate arguments
 
 Fundamental operation:
@@ -369,13 +389,13 @@ Intent + Frontier -> Next Frontier
 
 Intent programs must be written to guarantee termination under all possible frontiers.
 
-The runtime does not enforce:
+The `repeat` block (see §8) loops until its body produces no new assignments. The runtime does not enforce:
 
 - a maximum iteration count
 - cycle detection
 - timeout limits
 
-Authors must ensure their intent implementations converge by:
+Authors must ensure their `repeat`-based loops converge by:
 - designing state transitions toward a fixed point
 - avoiding cyclic dependencies between predicates
 - ensuring conditional guards eventually become false

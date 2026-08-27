@@ -424,7 +424,7 @@ static Exp* parse_expression(TokIter *it, Bindings *bindings,
 /* ------------------------------------------------------------------ */
 
 static Stmt* parse_statement(TokIter *it, Bindings *bindings,
-                             const char **error);
+                             int allow_repeat, const char **error);
 
 static Stmt* parse_when(TokIter *it, Bindings *bindings,
                         const char **error)
@@ -448,7 +448,7 @@ static Stmt* parse_when(TokIter *it, Bindings *bindings,
         *error = make_error(LINE(it), "out of memory"); return NULL; }
 
     while (tok_kind(it) != TOK_END) {
-        Stmt *child = parse_statement(it, bindings, error);
+        Stmt *child = parse_statement(it, bindings, 0, error);
         if (!child) break;
         if (body_count >= body_cap) {
             body_cap *= 2;
@@ -490,6 +490,60 @@ static Stmt* parse_when(TokIter *it, Bindings *bindings,
     return stmt;
 }
 
+static Stmt* parse_repeat(TokIter *it, Bindings *bindings,
+                          const char **error)
+{
+    Stmt *stmt;
+    Stmt *body = NULL;
+    int   body_cap = 4, body_count = 0;
+
+    body = (Stmt*)calloc((size_t)body_cap, sizeof(Stmt));
+    if (!body) {
+        *error = make_error(LINE(it), "out of memory");
+        return NULL;
+    }
+
+    while (tok_kind(it) != TOK_END) {
+        Stmt *child = parse_statement(it, bindings, 0, error);
+        if (!child) break;
+        if (body_count >= body_cap) {
+            body_cap *= 2;
+            {
+                Stmt *tmp = (Stmt*)realloc(body,
+                    (size_t)body_cap * sizeof(Stmt));
+                if (!tmp) {
+                    stmt_free_one(child); free(child); free(body);
+                    *error = make_error(LINE(it), "out of memory");
+                    return NULL;
+                }
+                body = tmp;
+            }
+        }
+        body[body_count++] = *child;
+        free(child);
+    }
+    if (!tok_expect(it, TOK_END)) {
+        int j;
+        for (j = 0; j < body_count; j++) stmt_free_one(&body[j]);
+        free(body);
+        *error = make_error(LINE(it), "expected 'end'");
+        return NULL;
+    }
+
+    stmt = (Stmt*)calloc(1, sizeof(Stmt));
+    if (!stmt) {
+        int j;
+        for (j = 0; j < body_count; j++) stmt_free_one(&body[j]);
+        free(body);
+        *error = make_error(LINE(it), "out of memory");
+        return NULL;
+    }
+    stmt->kind = STMT_REPEAT;
+    stmt->repeat.body_count = body_count;
+    stmt->repeat.body = body;
+    return stmt;
+}
+
 static Stmt* parse_assignment(TokIter *it, Bindings *bindings,
                               const char **error)
 {
@@ -522,11 +576,20 @@ static Stmt* parse_assignment(TokIter *it, Bindings *bindings,
 }
 
 static Stmt* parse_statement(TokIter *it, Bindings *bindings,
-                             const char **error)
+                             int allow_repeat, const char **error)
 {
     if (tok_kind(it) == TOK_WHEN) {
         tok_eat(it);
         return parse_when(it, bindings, error);
+    }
+    if (tok_kind(it) == TOK_REPEAT) {
+        if (!allow_repeat) {
+            *error = make_error(LINE(it),
+                "repeat blocks are only allowed at the intent top level");
+            return NULL;
+        }
+        tok_eat(it);
+        return parse_repeat(it, bindings, error);
     }
     if (tok_kind(it) == TOK_IDENT)
         return parse_assignment(it, bindings, error);
@@ -600,7 +663,7 @@ static Intent* parse_intent(TokIter *it, const char **error)
         *error = make_error(LINE(it), "out of memory"); return NULL; }
 
     while (tok_kind(it) != TOK_END && tok_kind(it) != TOK_EOF) {
-        Stmt *child = parse_statement(it, &bindings, error);
+        Stmt *child = parse_statement(it, &bindings, 1, error);
         if (!child) break;
         if (stmt_count >= stmt_cap) {
             stmt_cap *= 2;
@@ -643,11 +706,16 @@ static void stmt_free_one(Stmt *s)
             arg_free(s->assign.args[i]);
         free(s->assign.args);
         if (s->assign.rhs) exp_free(s->assign.rhs);
-    } else {
+    } else if (s->kind == STMT_WHEN) {
         if (s->when.cond) exp_free(s->when.cond);
         for (i = 0; i < s->when.body_count; i++)
             stmt_free_one(&s->when.body[i]);
         free(s->when.body);
+    } else {
+        /* STMT_REPEAT */
+        for (i = 0; i < s->repeat.body_count; i++)
+            stmt_free_one(&s->repeat.body[i]);
+        free(s->repeat.body);
     }
 }
 

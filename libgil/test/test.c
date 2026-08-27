@@ -870,10 +870,11 @@ static void test_propagate_active(void)
         "intent propagate_active(Node)\n"
         "\n"
         "    activated[Node] <= true\n"
-        "\n"
-        "    when activated[A] do\n"
-        "        when connected[A, B] do\n"
-        "            activated[B] <= true\n"
+        "    repeat\n"
+        "        when activated[A] do\n"
+        "            when connected[A, B] do\n"
+        "                activated[B] <= true\n"
+        "            end\n"
         "        end\n"
         "    end\n"
         "\n"
@@ -915,14 +916,16 @@ static void test_convergence_no_change(void)
     GilIntent *in;
     GilFrontier *f;
     int rc;
-    TEST("exec: convergence stops when no changes (no infinite loop)");
-    /* p <= true, then when p do p <= true end.
+    TEST("exec: repeat converges when body produces no change");
+    /* p <= true, then repeat with when p do p <= true end.
        First iter: p becomes true. Second iter: p already true, no change. */
     s = gil_load(
         "intent fixpoint()\n"
         "    p <= true\n"
-        "    when p do\n"
-        "        p <= true\n"
+        "    repeat\n"
+        "        when p do\n"
+        "            p <= true\n"
+        "        end\n"
         "    end\n"
         "end\n",
         NULL);
@@ -939,7 +942,310 @@ static void test_convergence_no_change(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Section: Assignment resolution (true+false -> both)                */
+/* Section: Repeat blocks (two-phase model)                           */
+/* ------------------------------------------------------------------ */
+
+static void test_repeat_body_in_phase1(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("repeat: repeat body assignment committed in Phase 1");
+
+    s = gil_load(
+        "intent t()\n"
+        "    flag <= true\n"
+        "    repeat\n"
+        "        derived <= true\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "flag", NULL, 0), GIL_TRUE,
+              "flag from non-repeat assignment");
+    CHECK_VAL(gil_frontier_get(f, "derived", NULL, 0), GIL_TRUE,
+              "derived from repeat body in Phase 1");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_repeat_phase1_with_when(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("repeat: when in repeat body sees non-repeat assignment in Phase 1");
+
+    s = gil_load(
+        "intent t()\n"
+        "    ready <= true\n"
+        "    repeat\n"
+        "        when ready do\n"
+        "            done <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "ready", NULL, 0), GIL_TRUE,
+              "ready from non-repeat assignment");
+    CHECK_VAL(gil_frontier_get(f, "done", NULL, 0), GIL_TRUE,
+              "done from repeat body when-guard in Phase 1");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_repeat_multi_block_together(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("repeat: two repeat blocks converge together across iterations");
+
+    /* Block 1 sets a; Block 2 reads a to set b.
+       In Phase 1 both bodies run once: block 1 sets a=true,
+       block 2 sees no a yet. Commit a=true.
+       Phase 2 iter 1: block 1 sees a already true (no change),
+       block 2 sees a=true and sets b=true. Commit b=true.
+       Phase 2 iter 2: no changes -> converges. */
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        a <= true\n"
+        "    end\n"
+        "    repeat\n"
+        "        when a do\n"
+        "            b <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "a", NULL, 0), GIL_TRUE,
+              "a from first repeat block");
+    CHECK_VAL(gil_frontier_get(f, "b", NULL, 0), GIL_TRUE,
+              "b from second repeat block via cross-iteration");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_repeat_multi_block_chain(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"x"};
+    const char *a2[] = {"y"};
+    const char *a3[] = {"z"};
+    TEST("repeat: three repeat blocks chain across Phase 2 iterations");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        p[x] <= true\n"
+        "    end\n"
+        "    repeat\n"
+        "        when p[A] do\n"
+        "            p[y] <= true\n"
+        "        end\n"
+        "    end\n"
+        "    repeat\n"
+        "        when p[A] do\n"
+        "            p[z] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_TRUE,
+              "p[x] from first repeat block Phase 1");
+    CHECK_VAL(gil_frontier_get(f, "p", a2, 1), GIL_TRUE,
+              "p[y] from second repeat block convergence");
+    CHECK_VAL(gil_frontier_get(f, "p", a3, 1), GIL_TRUE,
+              "p[z] from third repeat block convergence");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_repeat_no_phase1_output(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("repeat: no non-repeat statements, repeat converges from empty");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when never do\n"
+        "            p <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_FALSE,
+              "p should remain false (absent)");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_repeat_converge_from_frontier_state(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"a"};
+    const char *a2[] = {"b"};
+    const char *conn[] = {"a", "b"};
+    TEST("repeat: converges starting from pre-existing frontier state");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when p[A] do\n"
+        "            when connected[A, B] do\n"
+        "                p[B] <= true\n"
+        "            end\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "p", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "connected", conn, 2, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_TRUE, "p[a]");
+    CHECK_VAL(gil_frontier_get(f, "p", a2, 1), GIL_TRUE, "p[b] propagated");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_repeat_multiple_rounds(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"0"};
+    const char *a2[] = {"1"};
+    const char *a3[] = {"2"};
+    const char *a4[] = {"3"};
+    const char *c01[] = {"0", "1"};
+    const char *c12[] = {"1", "2"};
+    const char *c23[] = {"2", "3"};
+    const char *seed[] = {"0"};
+    TEST("repeat: multi-hop propagation converges correctly");
+
+    s = gil_load(
+        "intent t(Seed)\n"
+        "    activated[Seed] <= true\n"
+        "    repeat\n"
+        "        when activated[A] do\n"
+        "            when connected[A, B] do\n"
+        "                activated[B] <= true\n"
+        "            end\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "connected", c01, 2, GIL_TRUE);
+    gil_frontier_set(f, "connected", c12, 2, GIL_TRUE);
+    gil_frontier_set(f, "connected", c23, 2, GIL_TRUE);
+    rc = gil_intent_execute(in, f, seed, 1);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "activated", a1, 1), GIL_TRUE, "activated[0]");
+    CHECK_VAL(gil_frontier_get(f, "activated", a2, 1), GIL_TRUE, "activated[1]");
+    CHECK_VAL(gil_frontier_get(f, "activated", a3, 1), GIL_TRUE, "activated[2]");
+    CHECK_VAL(gil_frontier_get(f, "activated", a4, 1), GIL_TRUE, "activated[3]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_repeat_nested_in_when_parse_error(void)
+{
+    const char *err = NULL;
+    GilScript *s;
+    TEST("repeat: nested repeat inside when-block is a parse error");
+    s = gil_load(
+        "intent t()\n"
+        "    when true do\n"
+        "        repeat\n"
+        "            p <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        &err);
+    CHECK(s == NULL, "expected load failure");
+    CHECK(err != NULL, "error should not be NULL");
+    OK();
+}
+
+static void test_repeat_nested_in_repeat_parse_error(void)
+{
+    const char *err = NULL;
+    GilScript *s;
+    TEST("repeat: nested repeat inside another repeat is a parse error");
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        repeat\n"
+        "            p <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n",
+        &err);
+    CHECK(s == NULL, "expected load failure");
+    CHECK(err != NULL, "error should not be NULL");
+    OK();
+}
+
 /* ------------------------------------------------------------------ */
 
 static void test_resolution_true_false(void)
@@ -1581,6 +1887,8 @@ int main(void)
     test_frontier_free_null();
     test_load_file_nonexistent();
 test_exec_param_as_predicate_name();
+    test_repeat_nested_in_when_parse_error();
+    test_repeat_nested_in_repeat_parse_error();
 
     printf("\n--- Expression evaluation ---\n");
     test_exec_true_literal();
@@ -1610,6 +1918,15 @@ test_exec_param_as_predicate_name();
 
     printf("\n--- Convergence ---\n");
     test_convergence_no_change();
+
+    printf("\n--- Repeat blocks (two-phase model) ---\n");
+    test_repeat_body_in_phase1();
+    test_repeat_phase1_with_when();
+    test_repeat_multi_block_together();
+    test_repeat_multi_block_chain();
+    test_repeat_no_phase1_output();
+    test_repeat_converge_from_frontier_state();
+    test_repeat_multiple_rounds();
 
     printf("\n--- Assignment resolution ---\n");
     test_resolution_true_false();

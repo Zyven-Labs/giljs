@@ -35,6 +35,7 @@ enum {
     TOK_STAR,        /* "*"         */
     TOK_SLASH,       /* "/"         */
     TOK_INT,         /* integer literal */
+    TOK_REPEAT,      /* "repeat"    */
     TOK_IDENT        /* identifier  */
 };
 

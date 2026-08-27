@@ -145,9 +145,11 @@ end`;
 function test_intent_propagate_active() {
     const src = `intent propagate_active(Node)
     activated[Node] <= true
-    when activated[A] do
-        when connected[A, B] do
-            activated[B] <= true
+    repeat
+        when activated[A] do
+            when connected[A, B] do
+                activated[B] <= true
+            end
         end
     end
 end`;

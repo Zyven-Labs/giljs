@@ -40,11 +40,13 @@ static const char* lex_keyword(const char *s, size_t len)
        Table is small enough (9 keywords) that a loop is fine. */
     static const char *keywords[] = {
         "and", "both", "do", "end",
-        "false", "intent", "not", "or", "true", "when"
+        "false", "intent", "not", "or",
+        "repeat", "true", "when"
     };
     static const int  kw_kinds[] = {
         TOK_AND, TOK_BOTH, TOK_DO, TOK_END,
-        TOK_FALSE, TOK_INTENT, TOK_NOT, TOK_OR, TOK_TRUE, TOK_WHEN
+        TOK_FALSE, TOK_INTENT, TOK_NOT, TOK_OR,
+        TOK_REPEAT, TOK_TRUE, TOK_WHEN
     };
     static const int nk = (int)(sizeof(keywords) / sizeof(keywords[0]));
     int i;

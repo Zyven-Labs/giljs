@@ -85,7 +85,8 @@ typedef struct Exp {
 
 enum {
     STMT_ASSIGN = 0,
-    STMT_WHEN
+    STMT_WHEN,
+    STMT_REPEAT
 };
 
 typedef struct Stmt {
@@ -104,6 +105,12 @@ typedef struct Stmt {
         int         body_count;
         struct Stmt *body;             /* array of body statements       */
     } when;
+
+    /* For STMT_REPEAT */
+    struct {
+        int         body_count;
+        struct Stmt *body;             /* array of body statements       */
+    } repeat;
 } Stmt;
 
 /* ------------------------------------------------------------------ */

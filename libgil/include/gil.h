@@ -22,14 +22,21 @@
  *
  * --- Intent execution model ---
  * 1. Bind intent parameters from invocation arguments.
- * 2. Repeat until no assignments are produced (stable state):
- *    a. Evaluate all statements against the current frontier; the frontier
- *       is NOT modified during evaluation.
- *    b. Collect all generated assignments.
- *    c. Resolve conflicting assignments (true+false -> both, etc.).
- *    d. Commit resolved assignments atomically into the frontier.
- *    e. If any predicate value changed, repeat from step 2.
- * 3. Terminate when no assignments are produced (convergence reached).
+ * 2. **Phase 1 (first pass):** Evaluate ALL statements (including repeat
+ *    block bodies) exactly once against the current frontier snapshot.
+ *    The frontier is NOT modified during evaluation.
+ * 3. Collect all generated assignments, resolve conflicts, and commit
+ *    them atomically into the frontier.
+ * 4. **Phase 2 (repeat convergence):** If the intent has top-level
+ *    `repeat` blocks, iterate all of their bodies together as a group
+ *    until no new assignments are produced. Each iteration is a full
+ *    snapshot/commit cycle: evaluate all repeat bodies, collect
+ *    assignments, resolve, commit atomically. All repeat blocks converge
+ *    simultaneously, each seeing the others' changes from the previous
+ *    iteration.
+ *
+ * The first-pass assignments (step 3) are visible to the repeat
+ * convergence phase on its first iteration.
  *
  * --- Expression truth tables ---
  * NOT            AND                  OR
@@ -316,19 +323,23 @@ void gil_result_free(GilResult *r);
  * argc     -- number of arguments. Must match the intent's declared
  *             parameter count exactly.
  *
- * Execution follows the Gil convergence loop:
+ * Execution follows the Gil execution model:
  *   1. Bind intent parameters from args.
- *   2. Repeat until no assignments are produced:
- *      a. Evaluate all statements against the current frontier,
- *         accumulating assignments.
- *      b. Resolve conflicts (true+false -> both, etc.).
- *      c. Lock frontier, commit resolved assignments, unlock.
- *      d. If any predicate value changed, repeat.
- *   3. Return 0 (stable state reached).
+ *   2. **Phase 1:** Evaluate ALL statements (including repeat bodies)
+ *      against the current frontier snapshot, accumulating assignments.
+ *   3. Resolve conflicts (true+false -> both, etc.).
+ *   4. Lock frontier, commit resolved assignments, unlock.
+ *   5. **Phase 2:** If any top-level `repeat` blocks exist, iterate all
+ *      of their bodies together until convergence. Each iteration is a
+ *      full snapshot/resolve/commit cycle. The commitments from Phase 1
+ *      are visible to Phase 2 on its first iteration.
+ *   6. Return 0 (success).
  *
- * Between iterations, the frontier is in a committed, consistent
- * state. Other threads may read or set predicates on the same
- * frontier during those intervals.
+ * Repeat blocks must appear only at the top level of the intent body
+ * (not inside when-blocks or other repeat blocks).
+ *
+ * In case of error the frontier state is the last committed state;
+ * partial iterations are not committed.
  *
  * Returns 0 on successful convergence.
  * Returns -1 on error (e.g. argument count mismatch or unbound
