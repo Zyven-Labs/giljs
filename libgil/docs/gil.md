@@ -1,4 +1,4 @@
-# Gil (Gnosis Intent Language) v1 Specification
+# Gil (Gnosis Intent Language) Specification
 
 ## 1. Overview
 
@@ -55,7 +55,7 @@ assignment         ::= predicate "<=" expression
 predicate          ::= identifier
                      | identifier "[" argument_list? "]"
 
-argument_list      ::= identifier { "," identifier }
+argument_list      ::= arg_value { "," arg_value }
 
 expression         ::= disjunction
 
@@ -74,10 +74,30 @@ value              ::= "true"
                      | "false"
                      | "both"
 
+arg_value          ::= identifier
+                     | arithmetic
+
+arithmetic         ::= term { ("+" | "-") term }
+
+term               ::= factor { ("*" | "/") factor }
+
+factor             ::= integer_literal
+                     | variable
+                     | "(" arithmetic ")"
+
+variable           ::= identifier   # uppercase initial (see §5)
+
+integer_literal    ::= non_zero_digit { digit }
+                     | "0"
+
+digit              ::= "0" | non_zero_digit
+
+non_zero_digit     ::= "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+
 identifier         ::= letter { letter | digit | "_" }
 ```
 
-Operator precedence: `not` > `and` > `or`. Parentheses override precedence.
+Operator precedence: within a predicate argument, `*` `/` bind tighter than `+` `-`. Logical operators (`not` > `and` > `or`) apply only to expressions and never mix with arithmetic. Parentheses override precedence in both.
 
 ---
 
@@ -90,6 +110,16 @@ alive                # equivalent to  alive[]
 ```
 
 Predicate names are case-sensitive: `Location` and `location` are distinct.
+
+Predicate arguments may be identifiers (matching the identifier convention — see §5) or arithmetic expressions that evaluate to an integer constant:
+
+```gil
+score[alice, 42]
+score[alice, 2 + 3]
+score[alice, 2 + 3 * 4]   # 2 + 12 = 14
+```
+
+Integer arguments are constants matched literally; they follow the same equality semantics as string arguments. Arithmetic in argument positions is folded to a single integer constant at load time.
 
 ---
 
@@ -119,7 +149,45 @@ Here `Player` is bound by the intent header and `Current` by the `when` clause.
 
 ---
 
-## 6. Intent Execution
+## 6. Integer Constants and Arithmetic
+
+Integer constants are sequences of decimal digits:
+
+```gil
+0
+42
+1024
+```
+
+Integers are unbounded in the language; practical limits are enforced by the runtime. An integer constant evaluates to its numeric value.
+
+Integer constants appear **only** as predicate arguments (see §4). They are never assigned with `<=` and are never converted to a truth value — integers and logical values (`true`, `false`, `both`) belong to disjoint domains and never mix.
+
+Within a predicate argument, arithmetic operators combine integer constants and variables bound to integer constants:
+
+- `+` — integer addition
+- `-` — integer subtraction
+- `*` — integer multiplication
+- `/` — integer division (truncates toward zero)
+
+```gil
+position[alice, 3 + 4]        # matches position[alice, 7]
+position[alice, 2 + 3 * 4]    # matches position[alice, 14]
+position[alice, (2 + 3) * 4]  # matches position[alice, 20]
+counter[N + 1]                # matches counter[<N+1>] when N is bound
+```
+
+Arithmetic with only integer constants is folded into a single constant at load time. Arithmetic that references a variable is evaluated at execution time against that variable's bound value.
+
+Arithmetic operands must be integer constants or variables whose bound value is an integer constant. An identifier that is not an integer, a predicate, or a logical value in an arithmetic position is a type error.
+
+Division by zero is a load-time error when the divisor is a constant; when the divisor is a variable that evaluates to zero, it is a runtime error (the intent fails and the frontier is left in its last committed state).
+
+A variable used in arithmetic must be bound (by an intent parameter or a `when` clause) to an integer string at execution time. If it is bound to a non-integer value, execution fails.
+
+---
+
+## 7. Intent Execution
 
 An intent executes iteratively until convergence:
 
@@ -127,7 +195,7 @@ An intent executes iteratively until convergence:
 2. Repeat until no assignments are produced:
    a. Evaluate all statements against the current frontier — the frontier is **not** modified during evaluation.
    b. Collect all generated assignments.
-   c. Resolve assignments per Section 10 (Assignment Resolution).
+   c. Resolve assignments per Section 11 (Assignment Resolution).
    d. Commit assignments atomically to produce the next frontier.
 3. If the frontier changed, repeat from step 2.
 4. Terminate when no assignments are produced (stable state).
@@ -138,13 +206,13 @@ Termination is the intent author's responsibility. The language provides no iter
 
 ---
 
-## 7. Statements
+## 8. Statements
 
 A statement is either an assignment or a `when` block. Statements may appear anywhere inside an intent or `when` block. Nested `when` blocks are permitted.
 
 ---
 
-## 8. When Blocks
+## 9. When Blocks
 
 Syntax:
 
@@ -158,7 +226,7 @@ A `when` block executes when its expression evaluates to `true` or `both`. It do
 
 ---
 
-## 9. Assignment Semantics
+## 10. Assignment Semantics
 
 Assignments use the non-blocking operator:
 
@@ -172,7 +240,7 @@ Multiple assignments to the same predicate are accumulated and resolved at commi
 
 ---
 
-## 10. Assignment Resolution
+## 11. Assignment Resolution
 
 When multiple assignments target the same predicate, their values combine as follows:
 
@@ -189,19 +257,23 @@ Each combination produces exactly one result:
 - any contribution of `both`, or a `true`/`false` conflict, yields `both`
 
 ---
-## 11. Expression Semantics
+## 12. Expression Semantics
 
 Expressions evaluate to `true`, `false`, or `both`.
 
 Operators:
 
-- `not` — unary negation
+- `not` — unary logical negation
 - `and` — logical conjunction
 - `or` — logical disjunction
 
+Precedence (highest to lowest): `not` > `and` > `or`. Parentheses override precedence.
+
+Integer arithmetic is **not** part of expressions; it is available only inside predicate arguments (see §6). An integer constant or arithmetic expression cannot appear as a `when` condition or as the right-hand side of `<=`, and it is never converted to a logical value.
+
 ---
 
-## 12. Truth Tables
+## 13. Truth Tables
 
 ### NOT
 
@@ -241,7 +313,7 @@ Operators:
 
 ---
 
-## 13. Example
+## 14. Example
 
 The following intent activates every node reachable from a starting node through a `connected` relation:
 
@@ -273,9 +345,9 @@ Executing `propagate_active(start)` repeatedly applies the `when` clauses until 
 
 ---
 
-## 14. Summary
+## 15. Summary
 
-Gil v1 defines:
+Gil defines:
 
 - Predicates as frontier propositions
 - Intents as transitions
@@ -283,6 +355,7 @@ Gil v1 defines:
 - `<=` as synchronous non-blocking assignment
 - Atomic commit as a frontier transition
 - Iterative execution until convergence
+- Integer constants and arithmetic, matched as predicate arguments
 
 Fundamental operation:
 
@@ -292,7 +365,7 @@ Intent + Frontier -> Next Frontier
 
 ---
 
-## 15. Termination Guarantee
+## 16. Termination Guarantee
 
 Intent programs must be written to guarantee termination under all possible frontiers.
 

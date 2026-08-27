@@ -30,13 +30,18 @@ enum {
     TOK_RPAREN,      /* ")"         */
     TOK_LBRACKET,    /* "["         */
     TOK_RBRACKET,    /* "]"         */
+    TOK_PLUS,        /* "+"         */
+    TOK_MINUS,       /* "-"         */
+    TOK_STAR,        /* "*"         */
+    TOK_SLASH,       /* "/"         */
+    TOK_INT,         /* integer literal */
     TOK_IDENT        /* identifier  */
 };
 
 typedef struct Token {
     int kind;
     int line;                /* 1-based source line number       */
-    const char *text;        /* for TOK_IDENT: interned string   */
+    const char *text;        /* for TOK_IDENT / TOK_INT: interned string */
 } Token;
 
 /* Token array produced by the lexer. */

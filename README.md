@@ -48,7 +48,10 @@ absent from the frontier has value `GIL.FALSE` by default.
 | `lock()` | `undefined` | Acquire the frontier's internal lock |
 | `unlock()` | `undefined` | Release the internal lock |
 
-**Predicates** are identified by a name and zero or more positional string arguments:
+**Predicates** are identified by a name and zero or more positional arguments.
+Arguments are strings; integer constants in Gil scripts are folded to their
+decimal string form, so an integer argument is matched by passing its string
+representation:
 
 ```js
 const f = new Frontier();
@@ -71,7 +74,19 @@ f.get('owns', ['alice', 'sword']);  // GIL.BOTH
 // Delete
 f.del('owns', ['alice', 'sword']);
 f.get('owns', ['alice', 'sword']);  // GIL.FALSE
+
+// Integer constants: a script writing score[alice, 2 + 3] matches '5'
+f.set('score', ['alice', '5'], GIL.TRUE);
+f.get('score', ['alice', '5']);     // GIL.TRUE
 ```
+
+Gil supports integer constants and arithmetic (`+ - * /`) **inside predicate
+arguments only**. Constant-only arithmetic is folded to a single integer at
+load time; arithmetic that references a variable (e.g. `N + 1`) is evaluated
+at execution time against that variable's bound value. Integers are never
+assigned with `<=` and never converted to truth values — they are matched
+literally against the frontier as strings. See the
+[Gil specification](libgil/docs/gil.md) for details.
 
 #### Queries
 
@@ -254,8 +269,8 @@ npm install
 npm test
 ```
 
-`npm test` runs the **libgil C test suite** (69 tests) followed by the **giljs
-Node.js test suite** (14 tests) — both must pass.
+`npm test` runs the **libgil C test suite** (85 tests) followed by the **giljs
+Node.js test suite** (20 tests) — both must pass.
 
 ---
 

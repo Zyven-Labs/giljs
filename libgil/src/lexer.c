@@ -122,6 +122,39 @@ int lexer_tokenize(const char *source, Intern *intern, TokenList *out)
             p++;
             continue;
         }
+        if (*p == '+') {
+            if (tokenlist_push(out, TOK_PLUS, line, NULL) != 0) return -1;
+            p++;
+            continue;
+        }
+        if (*p == '-') {
+            if (tokenlist_push(out, TOK_MINUS, line, NULL) != 0) return -1;
+            p++;
+            continue;
+        }
+        if (*p == '*') {
+            if (tokenlist_push(out, TOK_STAR, line, NULL) != 0) return -1;
+            p++;
+            continue;
+        }
+        if (*p == '/') {
+            if (tokenlist_push(out, TOK_SLASH, line, NULL) != 0) return -1;
+            p++;
+            continue;
+        }
+
+        /* Integer literals: one or more decimal digits. */
+        if (is_digit(*p)) {
+            const char *start = p;
+            const char *text;
+            size_t len;
+            while (is_digit(*p)) p++;
+            len = (size_t)(p - start);
+            text = intern_put(intern, start, len);
+            if (!text) return -1;
+            if (tokenlist_push(out, TOK_INT, line, text) != 0) return -1;
+            continue;
+        }
 
         /* Identifiers and keywords. */
         if (is_letter(*p) || *p == '_') {

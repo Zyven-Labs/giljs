@@ -11,6 +11,33 @@
 #include <stddef.h> /* size_t */
 
 /* ------------------------------------------------------------------ */
+/* Argument nodes                                                     */
+/* ------------------------------------------------------------------ */
+
+/* Predicate arguments are either a plain constant (a lowercase literal or a
+ * folded integer), a variable resolved from the environment at execution, or
+ * an arithmetic expression combining integer constants and variables. */
+enum {
+    ARG_LITERAL = 0, /* constant string (interned)                     */
+    ARG_VAR,         /* uppercase identifier, resolved from env       */
+    ARG_ADD,         /* integer addition                               */
+    ARG_SUB,         /* integer subtraction                            */
+    ARG_MUL,         /* integer multiplication                         */
+    ARG_DIV          /* integer division                               */
+};
+
+typedef struct Arg {
+    int kind;
+    union {
+        const char *text;          /* ARG_LITERAL / ARG_VAR: interned string */
+        struct {
+            struct Arg *left;
+            struct Arg *right;
+        } binop;                   /* ARG_ADD/SUB/MUL/DIV                   */
+    } u;
+} Arg;
+
+/* ------------------------------------------------------------------ */
 /* Expression nodes                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -32,7 +59,7 @@ typedef struct Exp {
         struct {
             const char *name;          /* interned name                  */
             int         argc;
-            const char **args;         /* interned argument strings      */
+            Arg       **args;          /* argument expression nodes      */
         } pred;
 
         /* EXP_NOT:     unary sub-expression                              */
@@ -67,7 +94,7 @@ typedef struct Stmt {
     struct {
         const char *name;              /* interned predicate name        */
         int         argc;
-        const char **args;             /* interned args (may be vars)    */
+        Arg       **args;              /* argument expression nodes      */
         Exp        *rhs;               /* right-hand-side expression     */
     } assign;
 

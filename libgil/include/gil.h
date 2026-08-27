@@ -46,6 +46,19 @@
  *
  * Operator precedence: not > and > or. Parentheses override precedence.
  *
+ * --- Integer constants and arithmetic ---
+ * Predicate arguments may be identifiers (variables/literals) or integer
+ * constants. Within an argument position, arithmetic operators (+ - * /)
+ * combine integer constants and variables bound to integer constants;
+ * * and / bind tighter than + and -. Constant-only arithmetic is folded
+ * to a single integer at load time; arithmetic referencing variables is
+ * evaluated at execution time. Integers are never assigned with <= and
+ * are never converted to a logical value: they exist only as constants
+ * that can be matched against the frontier. Division by a constant zero
+ * is a load-time error; division by a variable that evaluates to zero, or
+ * using a non-integer variable operand, is a runtime error (the frontier
+ * keeps its last committed state).
+ *
  * --- Thread safety ---
  * GilScript and GilIntent are immutable after creation and may be shared
  * across threads without locking. Each GilFrontier carries an optional

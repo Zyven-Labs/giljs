@@ -1107,6 +1107,443 @@ static void test_load_file_nonexistent(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Section: Integer constants & arithmetic                            */
+/* ------------------------------------------------------------------ */
+
+static void test_int_arg_literal(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"alice", "42"};
+    int rc;
+    TEST("int: bare integer predicate argument matches");
+    s = gil_load(
+        "intent t()\n"
+        "    score[alice, 42] <= true\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "score", args, 2), GIL_TRUE,
+              "score[alice,42]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_arg_arithmetic(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"alice", "5"};
+    int rc;
+    TEST("int: arithmetic folds to a constant argument");
+    s = gil_load(
+        "intent t()\n"
+        "    score[alice, 2 + 3] <= true\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "score", args, 2), GIL_TRUE,
+              "score[alice,5]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_arg_precedence(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"alice", "14"};
+    int rc;
+    TEST("int: * binds tighter than + in arguments");
+    s = gil_load(
+        "intent t()\n"
+        "    score[alice, 2 + 3 * 4] <= true\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "score", args, 2), GIL_TRUE,
+              "score[alice,14]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_arg_parens(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"alice", "20"};
+    int rc;
+    TEST("int: parentheses override argument precedence");
+    s = gil_load(
+        "intent t()\n"
+        "    score[alice, (2 + 3) * 4] <= true\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "score", args, 2), GIL_TRUE,
+              "score[alice,20]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_arg_negative(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"alice", "-5"};
+    int rc;
+    TEST("int: subtraction yields negative constants");
+    s = gil_load(
+        "intent t()\n"
+        "    score[alice, 0 - 5] <= true\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "score", args, 2), GIL_TRUE,
+              "score[alice,-5]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_int_arg_literal(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"alice", "5"};
+    int rc;
+    TEST("when: integer literal argument matches frontier");
+    s = gil_load(
+        "intent t()\n"
+        "    when score[alice, 5] do\n"
+        "        p <= true\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    /* score absent => body skipped */
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_FALSE,
+              "p with score absent");
+    gil_frontier_free(f);
+
+    /* score[alice,5] = true => body executes */
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "score", args, 2, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_TRUE,
+              "p with score[alice,5]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_not_assignable(void)
+{
+    const char *err = NULL;
+    GilScript *s;
+    TEST("int: integer is not assignable via <=");
+    s = gil_load("intent t() lit <= 5 end\n", &err);
+    CHECK(s == NULL, "expected load failure");
+    CHECK(err != NULL, "error should not be NULL");
+    OK();
+}
+
+static void test_int_div_by_zero(void)
+{
+    const char *err = NULL;
+    GilScript *s;
+    TEST("int: division by zero is a load error");
+    s = gil_load("intent t() score[alice, 1 / 0] <= true end\n", &err);
+    CHECK(s == NULL, "expected load failure");
+    CHECK(err != NULL, "error should not be NULL");
+    OK();
+}
+
+static void test_int_arg_type_error(void)
+{
+    const char *err = NULL;
+    GilScript *s;
+    TEST("int: identifier in arithmetic position is an error");
+    s = gil_load("intent t() score[alice, 2 + foo] <= true end\n", &err);
+    CHECK(s == NULL, "expected load failure");
+    CHECK(err != NULL, "error should not be NULL");
+    OK();
+}
+
+static void test_int_var_arith_param(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"5"};
+    const char *got[] = {"6"};
+    int rc;
+    TEST("int: intent parameter used in arithmetic");
+    s = gil_load("intent t(N) counter[N + 1] <= true end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, args, 1);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "counter", got, 1), GIL_TRUE,
+              "counter[6]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_var_arith_when(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *seed[] = {"5"};
+    const char *got[] = {"6"};
+    int rc;
+    TEST("int: when-bound variable used in arithmetic");
+    s = gil_load(
+        "intent t()\n"
+        "    when score[X] do\n"
+        "        next[X + 1] <= true\n"
+        "    end\n"
+        "end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "score", seed, 1, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+    CHECK_VAL(gil_frontier_get(f, "next", got, 1), GIL_TRUE, "next[6]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_var_arith_nonint(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"alice"};
+    int rc;
+    TEST("int: non-integer variable operand fails at runtime");
+    s = gil_load("intent t(N) counter[N + 1] <= true end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, args, 1);
+    CHECK(rc != 0, "expected execution failure");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_int_var_arith_divzero(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    const char *args[] = {"0"};
+    int rc;
+    TEST("int: variable divisor of zero fails at runtime");
+    s = gil_load("intent t(N) counter[10 / N] <= true end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, args, 1);
+    CHECK(rc != 0, "expected execution failure");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_bound_param_not_enumerated(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *args[] = {"idle", "running"};
+    TEST("when: bound intent param not brute-force enumerated");
+    /* transition(From, To) : when active[From] do ...
+       From and To are bound by intent params, not when-variables.
+       Must produce clean active[To]=true, not BOTH. */
+    s = gil_load(
+        "intent set_state(S) active[S] <= true end\n"
+        "intent transition(From, To)\n"
+        "    when active[From] do\n"
+        "        active[From] <= false\n"
+        "        active[To] <= true\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "set_state");
+    CHECK(in != NULL, "set_state not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, args, 1);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+
+    in = gil_intent_get(s, "transition");
+    CHECK(in != NULL, "transition not found");
+    rc = gil_intent_execute(in, f, args, 2);
+    if (rc != 0) { printf("FAIL\n      exec rc=%d\n", rc); return; }
+
+    CHECK_VAL(gil_frontier_get(f, "active", &args[0], 1), GIL_FALSE,
+              "active[idle] should be false");
+    CHECK_VAL(gil_frontier_get(f, "active", &args[1], 1), GIL_TRUE,
+              "active[running] should be true (not BOTH)");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_pred_filter_enumerates(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a[] = {"alice", "bob"};
+    const char *b[] = {"bob", "carol"};
+    const char *x[] = {"alice", "carol"};
+    TEST("when: candidate collection filtered by predicate name");
+    /* suggest_friends(Person) with nested whens should not produce
+       spurious suggested alice->bob suggestions. */
+    s = gil_load(
+        "intent befriend(A, B)\n"
+        "    friends[A, B] <= true\n"
+        "    friends[B, A] <= true\n"
+        "end\n"
+        "intent suggest_friends(Person)\n"
+        "    when friends[Person, F] do\n"
+        "        when friends[F, FoF] do\n"
+        "            suggested[Person, FoF] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+
+    in = gil_intent_get(s, "befriend");
+    CHECK(in != NULL, "befriend not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, a, 2);
+    if (rc != 0) { printf("FAIL\n      exec befriend1 rc=%d\n", rc); return; }
+    rc = gil_intent_execute(in, f, b, 2);
+    if (rc != 0) { printf("FAIL\n      exec befriend2 rc=%d\n", rc); return; }
+
+    in = gil_intent_get(s, "suggest_friends");
+    CHECK(in != NULL, "suggest_friends not found");
+    {
+        const char *person[] = {"alice"};
+        rc = gil_intent_execute(in, f, person, 1);
+    }
+    if (rc != 0) { printf("FAIL\n      exec suggest rc=%d\n", rc); return; }
+
+    /* suggested[alice, carol] should be true (indirect friend) */
+    CHECK_VAL(gil_frontier_get(f, "suggested", x, 2), GIL_TRUE,
+              "suggested[alice,carol]");
+    /* suggested[alice, bob] should NOT be set (direct friend) */
+    CHECK_VAL(gil_frontier_get(f, "suggested", a, 2), GIL_FALSE,
+              "suggested[alice,bob] should be false");
+
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_pred_filter_battleship(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *ship1[] = {"carrier", "3", "5"};
+    const char *ship2[] = {"carrier", "4", "5"};
+    const char *fire[]  = {"3", "5"};
+    const char *hit1[]  = {"carrier", "3", "5"};
+    const char *hit2[]  = {"carrier", "4", "5"};
+    TEST("when: battleship no spurious hit on adjacent cell");
+    s = gil_load(
+        "intent place_ship(Ship, X, Y) ship_at[Ship, X, Y] <= true end\n"
+        "intent fire_at(X, Y)\n"
+        "    shot[X, Y] <= true\n"
+        "    when ship_at[S, X, Y] do\n"
+        "        hit[S, X, Y] <= true\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+
+    in = gil_intent_get(s, "place_ship");
+    CHECK(in != NULL, "place_ship not found");
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, ship1, 3);
+    if (rc != 0) { printf("FAIL\n      exec place1 rc=%d\n", rc); return; }
+    rc = gil_intent_execute(in, f, ship2, 3);
+    if (rc != 0) { printf("FAIL\n      exec place2 rc=%d\n", rc); return; }
+
+    in = gil_intent_get(s, "fire_at");
+    CHECK(in != NULL, "fire_at not found");
+    rc = gil_intent_execute(in, f, fire, 2);
+    if (rc != 0) { printf("FAIL\n      exec fire rc=%d\n", rc); return; }
+
+    CHECK_VAL(gil_frontier_get(f, "hit", hit1, 3), GIL_TRUE,
+              "hit[carrier,3,5] should be true");
+    CHECK_VAL(gil_frontier_get(f, "hit", hit2, 3), GIL_FALSE,
+              "hit[carrier,4,5] should be false");
+
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -1177,6 +1614,24 @@ test_exec_param_as_predicate_name();
     printf("\n--- Assignment resolution ---\n");
     test_resolution_true_false();
     test_resolution_both_everything();
+
+    printf("\n--- Integer constants & arithmetic ---\n");
+    test_int_arg_literal();
+    test_int_arg_arithmetic();
+    test_int_arg_precedence();
+    test_int_arg_parens();
+    test_int_arg_negative();
+    test_when_int_arg_literal();
+    test_int_not_assignable();
+    test_int_div_by_zero();
+    test_int_arg_type_error();
+    test_int_var_arith_param();
+    test_int_var_arith_when();
+    test_int_var_arith_nonint();
+    test_int_var_arith_divzero();
+    test_when_bound_param_not_enumerated();
+    test_when_pred_filter_enumerates();
+    test_when_pred_filter_battleship();
 
     printf("\n--- Edge cases ---\n");
     test_nested_when();

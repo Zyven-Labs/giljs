@@ -5,6 +5,7 @@
 #include "frontier.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <ctype.h>
 
 /* ------------------------------------------------------------------ */
@@ -67,7 +68,8 @@ typedef struct AssignEntry {
     const char **pred_args;
     size_t      pred_argc;
     GilVal      value;
-    int         args_owned;   /* 1 if pred_args were malloc'd          */
+    int         arr_owned;       /* 1 if pred_args array was malloc'd     */
+    int        *arg_owned;       /* per-slot: 1 if pred_args[i] malloc'd  */
 } AssignEntry;
 
 typedef struct {
@@ -83,13 +85,25 @@ static void assignbuf_init(AssignBuf *buf)
     buf->capacity = 0;
 }
 
+static void assignentry_free(AssignEntry *e)
+{
+    if (e->arr_owned) {
+        if (e->arg_owned) {
+            size_t k;
+            for (k = 0; k < e->pred_argc; k++)
+                if (e->arg_owned[k]) free((void*)e->pred_args[k]);
+            free(e->arg_owned);
+        }
+        free((void*)e->pred_args);
+    }
+}
+
 static void assignbuf_free(AssignBuf *buf)
 {
     size_t i;
     if (buf->entries) {
         for (i = 0; i < buf->count; i++)
-            if (buf->entries[i].args_owned)
-                free((void*)buf->entries[i].pred_args);
+            assignentry_free(&buf->entries[i]);
         free(buf->entries);
     }
     buf->entries = NULL;
@@ -99,7 +113,7 @@ static void assignbuf_free(AssignBuf *buf)
 
 static int assignbuf_add(AssignBuf *buf, const char *name,
                          const char *args[], size_t argc, GilVal val,
-                         int args_owned)
+                         int arr_owned, int *arg_owned)
 {
     if (buf->count >= buf->capacity) {
         size_t nc = buf->capacity ? buf->capacity * 2 : 32;
@@ -113,7 +127,8 @@ static int assignbuf_add(AssignBuf *buf, const char *name,
     buf->entries[buf->count].pred_args = args;
     buf->entries[buf->count].pred_argc = argc;
     buf->entries[buf->count].value = val;
-    buf->entries[buf->count].args_owned = args_owned;
+    buf->entries[buf->count].arr_owned = arr_owned;
+    buf->entries[buf->count].arg_owned = arg_owned;
     buf->count++;
     return 0;
 }
@@ -148,8 +163,7 @@ static int assignbuf_resolve(AssignBuf *buf)
                 }
                 if (same) {
                     a->value = resolve_vals(a->value, b->value);
-                    if (b->args_owned)
-                        free((void*)b->pred_args);
+                    assignentry_free(b);
                     /* Remove b by swapping with last. */
                     buf->entries[j] = buf->entries[buf->count - 1];
                     buf->count--;
@@ -167,16 +181,109 @@ static int assignbuf_resolve(AssignBuf *buf)
 
 static int is_var(const char *s) { return s && isupper((unsigned char)s[0]); }
 
+/* Strictly parse a decimal integer string into a long. Accepts an optional
+   leading '+' or '-'. Returns 1 on success, 0 if the string is not a valid
+   integer. */
+static int parse_long_strict(const char *s, long *out)
+{
+    char *end = NULL;
+    long v;
+    if (!s || *s == '\0') return 0;
+    v = strtol(s, &end, 10);
+    if (end == s || *end != '\0') return 0;
+    *out = v;
+    return 1;
+}
+
+/* Recursively collect all variable names appearing in an argument. */
+static void arg_collect_vars(const Arg *a, Env *vars)
+{
+    if (!a) return;
+    if (a->kind == ARG_VAR) {
+        env_put(vars, a->u.text, NULL);
+    } else if (a->kind == ARG_ADD || a->kind == ARG_SUB ||
+               a->kind == ARG_MUL || a->kind == ARG_DIV) {
+        arg_collect_vars(a->u.binop.left, vars);
+        arg_collect_vars(a->u.binop.right, vars);
+    }
+}
+
+/* Evaluate an argument node to a concrete string.
+ *   out       -- receives the string (borrowed or heap).
+ *   out_owned -- set to 1 when *out must be freed by the caller.
+ * Returns:
+ *   0  on success,
+ *   -1 on a hard error (unbound variable, out of memory, divide by zero),
+ *   1  when an operand is not a valid integer (arithmetic only). */
+static int arg_eval(const Arg *a, Env *env, const char **out, int *out_owned)
+{
+    if (!a) return -1;
+    switch (a->kind) {
+    case ARG_LITERAL:
+        *out = a->u.text;
+        *out_owned = 0;
+        return 0;
+
+    case ARG_VAR: {
+        const char *v = env_get(env, a->u.text);
+        if (!v) return -1;
+        *out = v;
+        *out_owned = 0;
+        return 0;
+    }
+
+    case ARG_ADD: case ARG_SUB: case ARG_MUL: case ARG_DIV: {
+        const char *ls = NULL, *rs = NULL;
+        int lo = 0, ro = 0;
+        long l, r, v;
+        int lr = arg_eval(a->u.binop.left, env, &ls, &lo);
+        int rr;
+        if (lr != 0) return lr;
+        rr = arg_eval(a->u.binop.right, env, &rs, &ro);
+        if (rr != 0) {
+            if (lo) free((void*)ls);
+            return rr;
+        }
+        if (!parse_long_strict(ls, &l) || !parse_long_strict(rs, &r)) {
+            if (lo) free((void*)ls);
+            if (ro) free((void*)rs);
+            return 1; /* non-integer operand */
+        }
+        if (a->kind == ARG_DIV && r == 0) {
+            if (lo) free((void*)ls);
+            if (ro) free((void*)rs);
+            return -1;
+        }
+        if (a->kind == ARG_ADD)      v = l + r;
+        else if (a->kind == ARG_SUB) v = l - r;
+        else if (a->kind == ARG_MUL) v = l * r;
+        else                         v = l / r;
+        if (lo) free((void*)ls);
+        if (ro) free((void*)rs);
+        {
+            char buf[32];
+            char *s;
+            sprintf(buf, "%ld", v);
+            s = (char*)malloc(strlen(buf) + 1);
+            if (!s) return -1;
+            strcpy(s, buf);
+            *out = s;
+            *out_owned = 1;
+        }
+        return 0;
+    }
+    }
+    return -1;
+}
+
 /* Recursively collect all variable names appearing in an expression. */
 static void expr_collect_vars(Exp *e, Env *vars)
 {
     if (!e) return;
     if (e->kind == EXP_PRED) {
         int k;
-        for (k = 0; k < e->u.pred.argc; k++) {
-            if (is_var(e->u.pred.args[k]))
-                env_put(vars, e->u.pred.args[k], NULL);
-        }
+        for (k = 0; k < e->u.pred.argc; k++)
+            arg_collect_vars(e->u.pred.args[k], vars);
     } else if (e->kind == EXP_NOT) {
         expr_collect_vars(e->u.unop.sub, vars);
     } else if (e->kind == EXP_AND || e->kind == EXP_OR) {
@@ -185,70 +292,95 @@ static void expr_collect_vars(Exp *e, Env *vars)
     }
 }
 
-/* Evaluate an expression with given bindings and frontier. */
-static GilVal expr_eval(Exp *e, Env *env, const GilFrontier *frontier)
+/* Evaluate an expression with given bindings and frontier.
+   Returns 0 on success (stores the result in *out), -1 on error. */
+static int expr_eval(Exp *e, Env *env, const GilFrontier *frontier,
+                     GilVal *out)
 {
-    if (!e) return GIL_FALSE;
+    if (!e) return -1;
     switch (e->kind) {
     case EXP_VALUE:
-        return (GilVal)e->u.value;
+        *out = (GilVal)e->u.value;
+        return 0;
 
     case EXP_PRED: {
-        /* Resolve any variables in predicate args to concrete values. */
         const char **resolved;
+        int *owned;
         int  i;
         int  argc = e->u.pred.argc;
         GilVal val;
 
         if (argc == 0) {
-            return gil_frontier_get(frontier, e->u.pred.name, NULL, 0);
+            *out = gil_frontier_get(frontier, e->u.pred.name, NULL, 0);
+            return 0;
         }
         resolved = (const char**)malloc((size_t)argc * sizeof(const char*));
-        if (!resolved) return GIL_FALSE;
+        owned = (int*)calloc((size_t)argc, sizeof(int));
+        if (!resolved || !owned) { free(resolved); free(owned); return -1; }
         for (i = 0; i < argc; i++) {
-            if (is_var(e->u.pred.args[i]))
-                resolved[i] = env_get(env, e->u.pred.args[i]);
-            else
-                resolved[i] = e->u.pred.args[i];
-            if (!resolved[i]) { free(resolved); return GIL_FALSE; }
+            int r = arg_eval(e->u.pred.args[i], env, &resolved[i], &owned[i]);
+            if (r == 1) {
+                int j;
+                for (j = 0; j < i; j++) if (owned[j]) free((void*)resolved[j]);
+                free(resolved); free(owned);
+                *out = GIL_FALSE;
+                return 0;
+            }
+            if (r != 0) {
+                int j;
+                for (j = 0; j < i; j++) if (owned[j]) free((void*)resolved[j]);
+                free(resolved); free(owned);
+                return -1;
+            }
         }
-        val = gil_frontier_get(frontier, e->u.pred.name, resolved, (size_t)argc);
-        free(resolved);
-        return val;
+        val = gil_frontier_get(frontier, e->u.pred.name,
+                               (const char**)resolved, (size_t)argc);
+        for (i = 0; i < argc; i++) if (owned[i]) free((void*)resolved[i]);
+        free(resolved); free(owned);
+        *out = val;
+        return 0;
     }
 
     case EXP_NOT: {
-        GilVal v = expr_eval(e->u.unop.sub, env, frontier);
-        if (v == GIL_TRUE)  return GIL_FALSE;
-        if (v == GIL_FALSE) return GIL_TRUE;
-        return GIL_BOTH;
+        GilVal v;
+        if (expr_eval(e->u.unop.sub, env, frontier, &v) != 0) return -1;
+        if (v == GIL_TRUE)  *out = GIL_FALSE;
+        else if (v == GIL_FALSE) *out = GIL_TRUE;
+        else *out = GIL_BOTH;
+        return 0;
     }
 
     case EXP_AND: {
-        GilVal l = expr_eval(e->u.binop.left, env, frontier);
-        /* Short-circuit on false */
-        if (l == GIL_FALSE) return GIL_FALSE;
+        GilVal l;
+        if (expr_eval(e->u.binop.left, env, frontier, &l) != 0) return -1;
+        if (l == GIL_FALSE) { *out = GIL_FALSE; return 0; }
         {
-            GilVal r = expr_eval(e->u.binop.right, env, frontier);
-            if (l == GIL_TRUE && r == GIL_TRUE) return GIL_TRUE;
-            if (r == GIL_FALSE) return GIL_FALSE;
-            return GIL_BOTH;
+            GilVal r;
+            if (expr_eval(e->u.binop.right, env, frontier, &r) != 0) return -1;
+            if (l == GIL_TRUE && r == GIL_TRUE) *out = GIL_TRUE;
+            else if (r == GIL_FALSE) *out = GIL_FALSE;
+            else *out = GIL_BOTH;
         }
+        return 0;
     }
 
     case EXP_OR: {
-        GilVal l = expr_eval(e->u.binop.left, env, frontier);
-        if (l == GIL_TRUE) return GIL_TRUE;
+        GilVal l;
+        if (expr_eval(e->u.binop.left, env, frontier, &l) != 0) return -1;
+        if (l == GIL_TRUE) { *out = GIL_TRUE; return 0; }
         {
-            GilVal r = expr_eval(e->u.binop.right, env, frontier);
-            if (r == GIL_TRUE) return GIL_TRUE;
-            if (l == GIL_FALSE && r == GIL_FALSE) return GIL_FALSE;
-            return GIL_BOTH;
+            GilVal r;
+            if (expr_eval(e->u.binop.right, env, frontier, &r) != 0) return -1;
+            if (r == GIL_TRUE) *out = GIL_TRUE;
+            else if (l == GIL_FALSE && r == GIL_FALSE) *out = GIL_FALSE;
+            else *out = GIL_BOTH;
         }
+        return 0;
     }
 
     default:
-        return GIL_FALSE;
+        *out = GIL_FALSE;
+        return 0;
     }
 }
 
@@ -262,6 +394,43 @@ static int exec_stmts(const Stmt *stmts, int count, Env *env,
 
 /* Execute a when-block: find all variable bindings that satisfy the
    condition, and for each, evaluate the body. */
+
+/* Recursively scan an expression for predicate sub-expressions.
+   For each predicate arg that is a plain ARG_VAR, record the predicate
+   name in the variable's association table. The vps array is indexed
+   by variable position in vars, holding up to MAX_ENV pred names each. */
+static void scan_cond_preds(Exp *e, Env *vars,
+                            const char *(*vps)[MAX_ENV], int *vpc)
+{
+    int vi, p;
+    if (!e) return;
+    if (e->kind == EXP_PRED) {
+        int k;
+        for (k = 0; k < e->u.pred.argc; k++) {
+            Arg *a = e->u.pred.args[k];
+            if (a->kind == ARG_VAR) {
+                for (vi = 0; vi < vars->count; vi++) {
+                    if (vars->names[vi] == a->u.text) {
+                        int already = 0;
+                        for (p = 0; p < vpc[vi]; p++) {
+                            if (vps[vi][p] == e->u.pred.name)
+                                { already = 1; break; }
+                        }
+                        if (!already && vpc[vi] < MAX_ENV)
+                            vps[vi][vpc[vi]++] = e->u.pred.name;
+                        break;
+                    }
+                }
+            }
+        }
+    } else if (e->kind == EXP_NOT) {
+        scan_cond_preds(e->u.unop.sub, vars, vps, vpc);
+    } else if (e->kind == EXP_AND || e->kind == EXP_OR) {
+        scan_cond_preds(e->u.binop.left, vars, vps, vpc);
+        scan_cond_preds(e->u.binop.right, vars, vps, vpc);
+    }
+}
+
 static int exec_when(const Stmt *when, Env *outer_env,
                      const GilFrontier *frontier, AssignBuf *buf)
 {
@@ -271,9 +440,23 @@ static int exec_when(const Stmt *when, Env *outer_env,
     env_init(&cond_vars);
     expr_collect_vars(cond, &cond_vars);
 
+    /* Remove variables already bound by outer env (intent params or
+       enclosing when clauses). The brute-force enumeration only needs
+       to try values for unbound variables. */
+    {
+        int dst = 0, vi;
+        for (vi = 0; vi < cond_vars.count; vi++) {
+            if (env_get(outer_env, cond_vars.names[vi]) == NULL)
+                cond_vars.names[dst++] = cond_vars.names[vi];
+        }
+        cond_vars.count = dst;
+    }
+
     /* If no variables in the condition, simple guard. */
     if (cond_vars.count == 0) {
-        GilVal v = expr_eval(cond, outer_env, frontier);
+        GilVal v;
+        if (expr_eval(cond, outer_env, frontier, &v) != 0)
+            return -1;
         if (v == GIL_TRUE || v == GIL_BOTH)
             return exec_stmts(when->when.body, when->when.body_count,
                               outer_env, frontier, buf);
@@ -283,8 +466,19 @@ static int exec_when(const Stmt *when, Env *outer_env,
     /* Condition has variables. Brute-force: iterate all frontier
        predicates to find each variable's possible concrete values.
        This works correctly for simple pattern-matching when-blocks
-       but is O(frontier_size * domain_size^N) in the worst case.
-       For Gil v1, frontier sizes are expected to be modest. */
+       but is O(frontier_size * domain_size^N) in the worst case. */
+
+    /* Precompute which predicate names each variable appears in
+       so we only collect candidates from matching frontier slots. */
+    {
+        const char *var_preds[MAX_ENV][MAX_ENV];
+        int         var_pred_count[MAX_ENV];
+        int         vi;
+
+        for (vi = 0; vi < cond_vars.count; vi++)
+            var_pred_count[vi] = 0;
+
+        scan_cond_preds(cond, &cond_vars, var_preds, var_pred_count);
 
     /* Collect candidate values for each unbound variable. */
     {
@@ -303,15 +497,21 @@ static int exec_when(const Stmt *when, Env *outer_env,
                 size_t si;
                 for (si = 0; si < frontier->capacity; si++) {
                     PredSlot *slot = &frontier->slots[si];
+                    int pi, should_collect = 0;
+
                     if (!slot->occupied) continue;
-                    /* Check if this slot's name appears as a predicate
-                       name in the condition with this variable as an arg. */
-                    /* Simple heuristic: scan all predicate expressions in
-                       the condition. If cond has pred(..., var, ...) where
-                       var matches cond_vars.names[vi], add slot's arg. */
-                    /* For now: just collect all arg values from all matching
-                       predicate names in the condition. This is a simple
-                       but correct approach for Gil v1. */
+
+                    /* Only collect candidates from frontier slots whose
+                       predicate name matches one of the predicate names
+                       where this variable appears in the condition. */
+                    for (pi = 0; pi < var_pred_count[vi]; pi++) {
+                        if (strcmp(slot->name, var_preds[vi][pi]) == 0) {
+                            should_collect = 1;
+                            break;
+                        }
+                    }
+                    if (!should_collect) continue;
+
                     {
                         /* Find all predicate sub-exprs in condition. */
                         /* Simplified: try to evaluate with this variable
@@ -372,7 +572,10 @@ static int exec_when(const Stmt *when, Env *outer_env,
                     env_put(&test_env, cond_vars.names[vi],
                             cands[vi][indices[vi]]);
 
-                result = expr_eval(cond, &test_env, frontier);
+                if (expr_eval(cond, &test_env, frontier, &result) != 0) {
+                    free(indices);
+                    goto cleanup_cands;
+                }
                 if (result == GIL_TRUE || result == GIL_BOTH) {
                     if (exec_stmts(when->when.body, when->when.body_count,
                                    &test_env, frontier, buf) != 0) {
@@ -399,6 +602,7 @@ static int exec_when(const Stmt *when, Env *outer_env,
     cleanup_cands:
         for (vi = 0; vi < cond_vars.count; vi++) free(cands[vi]);
     }
+    }
     return 0;
 }
 
@@ -407,9 +611,12 @@ static int exec_when(const Stmt *when, Env *outer_env,
 static int exec_assign(const Stmt *stmt, Env *env,
                        const GilFrontier *frontier, AssignBuf *buf)
 {
-    GilVal val = expr_eval(stmt->assign.rhs, env, frontier);
+    GilVal val;
     const char *pred_name;
-    int has_vars;
+    int i;
+
+    if (expr_eval(stmt->assign.rhs, env, frontier, &val) != 0)
+        return -1;
 
     /* Resolve the predicate name itself — it may be a variable. */
     if (is_var(stmt->assign.name))
@@ -418,32 +625,30 @@ static int exec_assign(const Stmt *stmt, Env *env,
         pred_name = stmt->assign.name;
     if (!pred_name) return -1;
 
-    /* Resolve predicate args: replace variable names with concrete values.
-       We build a resolved args array on the heap; it will be freed when
-       the assignbuf is freed. */
+    if (stmt->assign.argc == 0)
+        return assignbuf_add(buf, pred_name, NULL, 0, val, 0, NULL);
+
     {
         const char **resolved;
-        int i;
+        int *owned;
 
-        has_vars = 0;
+        resolved = (const char**)malloc((size_t)stmt->assign.argc *
+                                        sizeof(const char*));
+        owned = (int*)calloc((size_t)stmt->assign.argc, sizeof(int));
+        if (!resolved || !owned) { free(resolved); free(owned); return -1; }
+
         for (i = 0; i < stmt->assign.argc; i++) {
-            if (is_var(stmt->assign.args[i])) { has_vars = 1; break; }
+            int r = arg_eval(stmt->assign.args[i], env,
+                             &resolved[i], &owned[i]);
+            if (r != 0) {
+                int j;
+                for (j = 0; j < i; j++) if (owned[j]) free((void*)resolved[j]);
+                free(resolved); free(owned);
+                return -1;
+            }
         }
-        if (!has_vars) {
-            return assignbuf_add(buf, pred_name,
-                stmt->assign.args, (size_t)stmt->assign.argc, val, 0);
-        }
-        resolved = (const char**)malloc((size_t)stmt->assign.argc * sizeof(const char*));
-        if (!resolved) return -1;
-        for (i = 0; i < stmt->assign.argc; i++) {
-            if (is_var(stmt->assign.args[i]))
-                resolved[i] = env_get(env, stmt->assign.args[i]);
-            else
-                resolved[i] = stmt->assign.args[i];
-            if (!resolved[i]) { free(resolved); return -1; }
-        }
-        return assignbuf_add(buf, pred_name,
-            resolved, (size_t)stmt->assign.argc, val, 1);
+        return assignbuf_add(buf, pred_name, resolved,
+                             (size_t)stmt->assign.argc, val, 1, owned);
     }
 }
 

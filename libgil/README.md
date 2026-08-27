@@ -66,7 +66,7 @@ intent propagate(Node)
 end
 ```
 
-The full Gil v1 specification lives in [`docs/gil.md`](docs/gil.md), including the three-valued truth tables and the execution semantics.
+The full Gil specification lives in [`docs/gil.md`](docs/gil.md), including the three-valued truth tables, integer constants, and the execution semantics.
 
 ---
 
@@ -76,7 +76,7 @@ Requires a C89 compiler and `make`. No external dependencies.
 
 ```sh
 make          # builds libgil.a
-make test     # builds and runs the test suite (67 tests)
+make test     # builds and runs the test suite (85 tests)
 make clean    # removes build artifacts
 ```
 
@@ -181,18 +181,18 @@ libgil/
 ├── include/    # Public and internal headers (public API: gil.h)
 ├── src/        # Implementation (lexer, parser, frontier, query, executor)
 ├── test/       # Test suite
-├── docs/       # Gil v1 language specification
+├── docs/       # Gil language specification
 ├── Makefile
 └── LICENSE     # MIT
 ```
 
 ## Testing
 
-`make test` compiles and runs a 67-case suite covering: frontier basics, pattern queries, script loading (including malformed input), the full three-valued truth tables, operator precedence, parameterized intents, when-block guards, nested when-blocks, assignment conflict resolution, and the spec's `propagate_active` convergence example.
+`make test` compiles and runs an 85-case suite covering: frontier basics, pattern queries, script loading (including malformed input), the full three-valued truth tables, operator precedence, parameterized intents, when-block guards, nested when-blocks, assignment conflict resolution, integer constants, argument arithmetic (including variables bound to integers), intent-parameter exclusion from brute-force enumeration, predicate-name filtered candidate collection, and the spec's `propagate_active` convergence example.
 
 ```sh
 make test
-# Results: 67/67 tests passed
+# Results: 85/85 tests passed
 ```
 
 ## License

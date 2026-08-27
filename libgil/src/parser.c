@@ -94,8 +94,174 @@ static void intent_free_one(Intent *it);
 /* Expression parsing                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Intern table used to fold arithmetic constants to canonical strings.
+   Set once by parser_parse before any parsing begins. */
+static Intern *g_intern;
+
 static Exp* parse_expression(TokIter *it, Bindings *bindings,
                              const char **error);
+
+static Arg* parse_term(TokIter *it, const char **error);
+static Arg* parse_arithmetic(TokIter *it, const char **error);
+static void arg_free(Arg *a);
+
+/* Convert a long to its canonical decimal string and intern it.
+   Returns the interned string, or NULL on out-of-memory. */
+static const char* intern_long(long v)
+{
+    char buf[32];
+    sprintf(buf, "%ld", v);
+    return intern_str(g_intern, buf);
+}
+
+static Arg* arg_new_literal(const char *text)
+{
+    Arg *a = (Arg*)calloc(1, sizeof(Arg));
+    if (!a) return NULL;
+    a->kind = ARG_LITERAL;
+    a->u.text = text;
+    return a;
+}
+
+static Arg* arg_new_var(const char *text)
+{
+    Arg *a = (Arg*)calloc(1, sizeof(Arg));
+    if (!a) return NULL;
+    a->kind = ARG_VAR;
+    a->u.text = text;
+    return a;
+}
+
+/* Build a binary arithmetic node. If both operands are integer literals,
+   fold them into a single literal constant at parse time; otherwise build
+   a runtime node to be evaluated during execution. On error frees both
+   inputs and returns NULL. */
+static Arg* arg_make_bin(int kind, Arg *l, Arg *r, int line, const char **error)
+{
+    if (l->kind == ARG_LITERAL && r->kind == ARG_LITERAL) {
+        long lv = strtol(l->u.text, NULL, 10);
+        long rv = strtol(r->u.text, NULL, 10);
+        long v;
+        const char *s;
+        if (kind == ARG_DIV && rv == 0) {
+            arg_free(l); arg_free(r);
+            *error = make_error(line, "division by zero");
+            return NULL;
+        }
+        if (kind == ARG_ADD)      v = lv + rv;
+        else if (kind == ARG_SUB) v = lv - rv;
+        else if (kind == ARG_MUL) v = lv * rv;
+        else                      v = lv / rv;
+        s = intern_long(v);
+        arg_free(l); arg_free(r);
+        if (!s) { *error = make_error(line, "out of memory"); return NULL; }
+        return arg_new_literal(s);
+    }
+    {
+        Arg *a = (Arg*)calloc(1, sizeof(Arg));
+        if (!a) { *error = make_error(line, "out of memory");
+                  arg_free(l); arg_free(r); return NULL; }
+        a->kind = kind;
+        a->u.binop.left = l;
+        a->u.binop.right = r;
+        return a;
+    }
+}
+
+/* Parse an integer factor: a bare integer literal, a parenthesized
+   arithmetic expression, or a variable. */
+static Arg* parse_factor(TokIter *it, const char **error)
+{
+    if (tok_kind(it) == TOK_INT) {
+        Token *t = tok_eat(it);
+        return arg_new_literal(t->text);
+    }
+    if (tok_kind(it) == TOK_IDENT) {
+        Token *t = tok_cur(it);
+        if (isupper((unsigned char)t->text[0])) {
+            tok_eat(it);
+            return arg_new_var(t->text);
+        }
+        *error = make_error(LINE(it), "expected integer or variable");
+        return NULL;
+    }
+    if (tok_kind(it) == TOK_LPAREN) {
+        Arg *result;
+        tok_eat(it);
+        result = parse_arithmetic(it, error);
+        if (!result) return NULL;
+        if (!tok_expect(it, TOK_RPAREN)) {
+            arg_free(result);
+            *error = make_error(LINE(it), "expected ')'");
+            return NULL;
+        }
+        return result;
+    }
+    *error = make_error(LINE(it), "expected integer");
+    return NULL;
+}
+
+/* Parse a multiplicative term: factor { ("*" | "/") factor }. */
+static Arg* parse_term(TokIter *it, const char **error)
+{
+    Arg *left = parse_factor(it, error);
+    if (!left) return NULL;
+    while (tok_kind(it) == TOK_STAR || tok_kind(it) == TOK_SLASH) {
+        int op = tok_kind(it);
+        Arg *right;
+        tok_eat(it);
+        right = parse_factor(it, error);
+        if (!right) { arg_free(left); return NULL; }
+        left = arg_make_bin(op == TOK_STAR ? ARG_MUL : ARG_DIV,
+                            left, right, LINE(it), error);
+        if (!left) return NULL;
+    }
+    return left;
+}
+
+/* Parse an additive expression: term { ("+" | "-") term }. */
+static Arg* parse_arithmetic(TokIter *it, const char **error)
+{
+    Arg *left = parse_term(it, error);
+    if (!left) return NULL;
+    while (tok_kind(it) == TOK_PLUS || tok_kind(it) == TOK_MINUS) {
+        int op = tok_kind(it);
+        Arg *right;
+        tok_eat(it);
+        right = parse_term(it, error);
+        if (!right) { arg_free(left); return NULL; }
+        left = arg_make_bin(op == TOK_PLUS ? ARG_ADD : ARG_SUB,
+                            left, right, LINE(it), error);
+        if (!left) return NULL;
+    }
+    return left;
+}
+
+/* Parse a single predicate argument value. A lowercase identifier is a
+   plain literal; everything else is an arithmetic expression (which also
+   covers bare integer literals and variables). */
+static Arg* parse_arg_value(TokIter *it, const char **error)
+{
+    if (tok_kind(it) == TOK_IDENT) {
+        Token *t = tok_cur(it);
+        if (!isupper((unsigned char)t->text[0])) {
+            tok_eat(it);
+            return arg_new_literal(t->text);
+        }
+    }
+    return parse_arithmetic(it, error);
+}
+
+static void arg_free(Arg *a)
+{
+    if (!a) return;
+    if (a->kind == ARG_ADD || a->kind == ARG_SUB ||
+        a->kind == ARG_MUL || a->kind == ARG_DIV) {
+        arg_free(a->u.binop.left);
+        arg_free(a->u.binop.right);
+    }
+    free(a);
+}
 
 static Exp* parse_predicate(TokIter *it, Bindings *bindings,
                             const char **error)
@@ -121,26 +287,31 @@ static Exp* parse_predicate(TokIter *it, Bindings *bindings,
     exp->u.pred.args = NULL;
 
     if (tok_kind(it) == TOK_LBRACKET) {
-        const char **args = NULL;
+        Arg **args = NULL;
         int argc = 0, cap = 0;
         tok_eat(it);
         while (tok_kind(it) != TOK_RBRACKET) {
-            Token *at;
+            Arg *av;
             if (tok_kind(it) == TOK_COMMA) { tok_eat(it); continue; }
-            at = tok_expect(it, TOK_IDENT);
-            if (!at) { free(args); free(exp);
-                *error = make_error(LINE(it), "expected ident in arg list");
-                return NULL; }
+            av = parse_arg_value(it, error);
+            if (!av) {
+                int j;
+                for (j = 0; j < argc; j++) arg_free(args[j]);
+                free(args); free(exp); return NULL;
+            }
             if (argc >= cap) {
                 int nc = cap ? cap * 2 : 4;
-                const char **t = (const char**)realloc(args,
-                    nc * sizeof(const char*));
-                if (!t) { free(args); free(exp);
+                Arg **t = (Arg**)realloc(args, nc * sizeof(Arg*));
+                if (!t) {
+                    int j;
+                    for (j = 0; j < argc; j++) arg_free(args[j]);
+                    free(args); arg_free(av); free(exp);
                     *error = make_error(LINE(it), "out of memory");
-                    return NULL; }
+                    return NULL;
+                }
                 args = t; cap = nc;
             }
-            args[argc++] = at->text;
+            args[argc++] = av;
         }
         tok_eat(it); /* ']' */
         exp->u.pred.argc = argc;
@@ -468,6 +639,8 @@ static void stmt_free_one(Stmt *s)
     int i;
     if (!s) return;
     if (s->kind == STMT_ASSIGN) {
+        for (i = 0; i < s->assign.argc; i++)
+            arg_free(s->assign.args[i]);
         free(s->assign.args);
         if (s->assign.rhs) exp_free(s->assign.rhs);
     } else {
@@ -482,6 +655,9 @@ static void exp_free(Exp *e)
 {
     if (!e) return;
     if (e->kind == EXP_PRED) {
+        int i;
+        for (i = 0; i < e->u.pred.argc; i++)
+            arg_free(e->u.pred.args[i]);
         free(e->u.pred.args);
     } else if (e->kind == EXP_NOT) {
         exp_free(e->u.unop.sub);
@@ -513,7 +689,7 @@ Intent* parser_parse(TokenList *tokens, Intern *intern,
     Intent  *intents = NULL;
     int      cap = 8, count = 0;
 
-    (void)intern;
+    g_intern = intern;
     tok_init(&it, tokens);
 
     intents = (Intent*)calloc((size_t)cap, sizeof(Intent));

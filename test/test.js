@@ -177,6 +177,78 @@ end`;
     }
 }
 
+function test_int_arg_literal() {
+    const src = `intent t()
+    score[alice, 42] <= true
+end`;
+    const s = Script.load(src);
+    const intent = s.intent('t');
+    const f = new Frontier();
+    intent.execute(f);
+    assertVal(f.get('score', ['alice', '42']), GIL.TRUE, 'score[alice,42]');
+}
+
+function test_int_arg_arithmetic() {
+    const src = `intent t()
+    score[alice, 2 + 3] <= true
+end`;
+    const s = Script.load(src);
+    const intent = s.intent('t');
+    const f = new Frontier();
+    intent.execute(f);
+    assertVal(f.get('score', ['alice', '5']), GIL.TRUE, 'score[alice,5]');
+}
+
+function test_int_arg_precedence() {
+    const src = `intent t()
+    score[alice, 2 + 3 * 4] <= true
+end`;
+    const s = Script.load(src);
+    const intent = s.intent('t');
+    const f = new Frontier();
+    intent.execute(f);
+    assertVal(f.get('score', ['alice', '14']), GIL.TRUE, 'score[alice,14]');
+}
+
+function test_int_when_arg() {
+    const src = `intent t()
+    when score[alice, 5] do
+        p <= true
+    end
+end`;
+    const s = Script.load(src);
+    const intent = s.intent('t');
+    const f = new Frontier();
+    f.set('score', ['alice', '5'], GIL.TRUE);
+    intent.execute(f);
+    assertVal(f.get('p'), GIL.TRUE, 'p after when score[alice,5]');
+}
+
+function test_int_var_arith_param() {
+    const src = `intent t(N)
+    counter[N + 1] <= true
+end`;
+    const s = Script.load(src);
+    const intent = s.intent('t');
+    const f = new Frontier();
+    intent.execute(f, ['5']);
+    assertVal(f.get('counter', ['6']), GIL.TRUE, 'counter[6]');
+}
+
+function test_int_var_arith_when() {
+    const src = `intent t()
+    when score[X] do
+        next[X + 1] <= true
+    end
+end`;
+    const s = Script.load(src);
+    const intent = s.intent('t');
+    const f = new Frontier();
+    f.set('score', ['5'], GIL.TRUE);
+    intent.execute(f);
+    assertVal(f.get('next', ['6']), GIL.TRUE, 'next[6]');
+}
+
 /* ------------------------------------------------------------------ */
 /* Main test runner                                                   */
 /* ------------------------------------------------------------------ */
@@ -199,6 +271,13 @@ const tests = [
     test_intent_execute_with_params,
     test_intent_propagate_active,
     test_intent_wrong_arg_count,
+    // Integer constants & arithmetic
+    test_int_arg_literal,
+    test_int_arg_arithmetic,
+    test_int_arg_precedence,
+    test_int_when_arg,
+    test_int_var_arith_param,
+    test_int_var_arith_when,
 ];
 
 console.log('=== giljs test suite ===\n');
