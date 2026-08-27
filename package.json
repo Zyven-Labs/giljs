@@ -1,5 +1,5 @@
 {
-  "name": "@zyven/giljs",
+  "name": "@zyvenlabs/giljs",
   "version": "1.0.0",
   "description": "Node.js native addon for libgil — the Gnosis Intent Language runtime",
   "main": "lib/index.js",

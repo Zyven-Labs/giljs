@@ -3,7 +3,7 @@
 **Node.js native addon for [libgil](libgil/) — the Gnosis Intent Language runtime.**
 
 ```js
-const { Script, Frontier, Intent, GIL } = require('@zyven/giljs');
+const { Script, Frontier, Intent, GIL } = require('@zyvenlabs/giljs');
 
 const src = `intent lightOn()
     lit <= true
@@ -41,7 +41,7 @@ absent from the frontier has value `GIL.FALSE` by default.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `get(name, args?)` | `GIL.FALSE(0)`, `GIL.TRUE(1)`, or `GIL.BOTH(2)` | Look up a predicate value |
+| `get(name, args?)` | `GIL.FALSE` (value `0`), `GIL.TRUE` (value `1`), or `GIL.BOTH` (value `2`) | Look up a predicate value |
 | `set(name, args?, value?)` | `undefined` | Set a predicate's value (defaults to `GIL.TRUE`) |
 | `del(name, args?)` | `undefined` | Remove a predicate from the frontier |
 | `query(name, pattern?)` | `{ matches: [...] }` | Pattern-match predicates (see [Queries](#queries)) |
@@ -114,7 +114,7 @@ when the JavaScript object is garbage collected.
 
 | Instance Method | Returns | Description |
 |-----------------|---------|-------------|
-| `script.intent(name)` | `Intent` \| `undefined` | Look up a named intent |
+| `Script.intent(name)` | `Intent` \| `undefined` | Look up a named intent |
 
 ```js
 // From a string
@@ -214,7 +214,7 @@ f.get('activated', ['c']); // GIL.TRUE
 ## Constants: `GIL`
 
 ```js
-const { GIL } = require('@zyven/giljs');
+const { GIL } = require('@zyvenlabs/giljs');
 
 GIL.FALSE  // 0
 GIL.TRUE   // 1
@@ -225,7 +225,7 @@ These are the three truth values used by `Frontier.get()` and `Frontier.set()`.
 
 ---
 
-## Error handling
+## Error Handling
 
 All type errors (wrong argument types, missing arguments) throw a standard
 `TypeError`. Script parsing and intent execution failures throw `Error`.
@@ -237,7 +237,7 @@ exceptions.
 ## Installation
 
 ```sh
-npm install @zyven/giljs
+npm install @zyvenlabs/giljs
 ```
 
 The addon is compiled from C/C++ source via `node-gyp` during install. You
