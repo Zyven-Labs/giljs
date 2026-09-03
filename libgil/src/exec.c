@@ -284,9 +284,9 @@ static int arg_eval(const Arg *a, Env *env, const char **out, int *out_owned)
             else if ((l == -1) || (r == -1)) v = -(l * r);
             else if (l == 0 || r == 0)       v = 0;
             else if (l > 0 && r > 0 && l > (long)LONG_MAX / r) return -1;
-            else if (l < 0 && r < 0 && l < (long)LONG_MIN / r) return -1;
-            else if (l > 0 && r < 0 && r < (long)LONG_MAX / l)  return -1;
-            else if (l < 0 && r > 0 && l < (long)LONG_MAX / r)  return -1;
+            else if (l < 0 && r < 0 && l < (long)LONG_MAX / r) return -1;
+            else if (l > 0 && r < 0 && l > (long)LONG_MIN / r) return -1;
+            else if (l < 0 && r > 0 && l < (long)LONG_MIN / r) return -1;
             else                                     v = l * r;
         }
         else {

@@ -175,17 +175,17 @@ static Arg* arg_make_bin(int kind, Arg *l, Arg *r, int line, const char **error)
                 *error = make_error(line, "integer overflow");
                 return NULL;
             }
-            else if (lv < 0 && rv < 0 && lv < (long)LONG_MIN / rv) {
+            else if (lv < 0 && rv < 0 && lv < (long)LONG_MAX / rv) {
                 arg_free(l); arg_free(r);
                 *error = make_error(line, "integer overflow");
                 return NULL;
             }
-            else if (lv > 0 && rv < 0 && rv < (long)LONG_MAX / lv) {
+            else if (lv > 0 && rv < 0 && lv > (long)LONG_MIN / rv) {
                 arg_free(l); arg_free(r);
                 *error = make_error(line, "integer overflow");
                 return NULL;
             }
-            else if (lv < 0 && rv > 0 && lv < (long)LONG_MAX / rv) {
+            else if (lv < 0 && rv > 0 && lv < (long)LONG_MIN / rv) {
                 arg_free(l); arg_free(r);
                 *error = make_error(line, "integer overflow");
                 return NULL;
@@ -852,6 +852,18 @@ Intent* parser_parse(TokenList *tokens, Intern *intern,
     while (tok_kind(&it) != TOK_EOF) {
         Intent *parsed;
         if (tok_kind(&it) == TOK_END) { tok_eat(&it); continue; }
+
+        /* An invalid character was rejected by the lexer; the lexer already
+           stored a "line N: invalid character" message in *error. Prefer it
+           over a generic message, but fall back to one if it is missing. */
+        if (tok_kind(&it) == TOK_ERR) {
+            int j;
+            if (!*error)
+                *error = make_error(LINE(&it), "invalid character");
+            for (j = 0; j < count; j++) intent_free_one(&intents[j]);
+            free(intents);
+            return NULL;
+        }
 
         parsed = parse_intent(&it, error);
         if (!parsed) {

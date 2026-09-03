@@ -21,7 +21,7 @@ GilScript* load_from_source(const char *source, const char **error)
         return NULL;
     }
 
-    if (lexer_tokenize(source, intern, &tokens) != 0) {
+    if (lexer_tokenize(source, intern, &tokens, error) != 0) {
         intern_free(intern);
         if (error) *error = "out of memory";
         return NULL;

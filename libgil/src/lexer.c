@@ -58,7 +58,23 @@ static const char* lex_keyword(const char *s, size_t len)
     return NULL;
 }
 
-int lexer_tokenize(const char *source, Intern *intern, TokenList *out)
+/* Static buffer for the "invalid character" error message. The lexer is
+   used once per gil_load call, so a single static buffer is safe. */
+static char lexer_errmsg[128];
+
+/* Format an "invalid character" message describing a single byte. */
+static void lex_set_err(const char **errmsg, int line, char c)
+{
+    char cbuf[2];
+    cbuf[0] = c;
+    cbuf[1] = '\0';
+    snprintf(lexer_errmsg, sizeof(lexer_errmsg),
+             "line %d: invalid character %s", line, cbuf);
+    if (errmsg) *errmsg = lexer_errmsg;
+}
+
+int lexer_tokenize(const char *source, Intern *intern, TokenList *out,
+                   const char **errmsg)
 {
     const char *p;
     int line = 1;
@@ -182,8 +198,12 @@ int lexer_tokenize(const char *source, Intern *intern, TokenList *out)
             continue;
         }
 
-        /* Unknown character — skip with a warning? For now, fatal. */
-        /* We let unknown chars through but they'll be parse errors. */
+        /* Unknown character: emit a TOK_ERR token at this position and
+           record a descriptive error message. The parser turns TOK_ERR
+           into a "line N: invalid character" load failure, so malformed
+           programs no longer parse silently. */
+        lex_set_err(errmsg, line, *p);
+        if (tokenlist_push(out, TOK_ERR, line, NULL) != 0) return -1;
         p++;
     }
 

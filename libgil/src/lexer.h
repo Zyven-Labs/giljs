@@ -35,8 +35,9 @@ enum {
     TOK_STAR,        /* "*"         */
     TOK_SLASH,       /* "/"         */
     TOK_INT,         /* integer literal */
-    TOK_REPEAT,      /* "repeat"    */
-    TOK_IDENT        /* identifier  */
+    TOK_REPEAT,      /* "repeat"      */
+    TOK_IDENT,       /* identifier  */
+    TOK_ERR          /* invalid / unrecognized character (carries line) */
 };
 
 typedef struct Token {
@@ -52,9 +53,13 @@ typedef struct TokenList {
     size_t capacity;
 } TokenList;
 
-/* Lex source into a TokenList. All ident text is interned. Returns
-   0 on success, -1 on failure (memory). */
-int lexer_tokenize(const char *source, Intern *intern, TokenList *out);
+/* Lex source into a TokenList. All ident text is interned.
+   If an unrecognized character is encountered a TOK_ERR token is emitted
+   at its position and *errmsg (if non-NULL) receives a static,
+   NUL-terminated message such as "line 3: invalid character '@'".
+   Returns 0 on success, -1 on failure (memory). */
+int lexer_tokenize(const char *source, Intern *intern, TokenList *out,
+                   const char **errmsg);
 
 /* Free tokens and the list (does NOT free interned strings). */
 void lexer_free(TokenList *list);
