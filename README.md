@@ -25,7 +25,7 @@ console.log(f.get('lit')); // GIL.TRUE (1)
 Gil is a small three-valued logic language for describing *intents* — named,
 parameterized transitions that read and write predicates on a **frontier**.
 The language itself is documented in [`libgil/README.md`](libgil/) and
-specified in [`libgil/docs/gil.md`](libgil/docs/gil.md).
+specified in [`spec/`](../gil-examples/spec/).
 
 This package lets you load Gil scripts, create frontiers, and execute intents
 from Node.js — all through a clean, garbage-collected C++ native addon.
@@ -271,6 +271,13 @@ npm test
 
 `npm test` runs the **libgil C test suite** (85 tests) followed by the **giljs
 Node.js test suite** (20 tests) — both must pass.
+
+---
+
+## Specification
+
+The complete Gil language specification is available in the `spec/` directory:
+- [gil-complete-specification.md](spec/gil-complete-specification.md) - Complete specification document
 
 ---
 

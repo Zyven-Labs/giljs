@@ -24,13 +24,12 @@ statement          ::= assignment
                     | repeat_block
                     | expression
 
-assignment         ::= predicate "≤" expression
-                     | predicate "≤" expression "when" condition
+assignment         ::= predicate "<=" expression
 
 predicate          ::= IDENTIFIER ("[" argument_list "]")?
 
 argument_list      ::= argument ("," argument)* | epsilon
-argument           ::= STRING_LITERAL | IDENTIFIER | INTEGER_CONSTANT
+argument           ::= IDENTIFIER | INTEGER_CONSTANT
 
 when_block         ::= "when" expression "do" statement_list "end"
 repeat_block       ::= "repeat" statement_list "end"
@@ -42,7 +41,6 @@ not_expression     ::= "not" not_expression
                     | primary_expression
 primary_expression ::= "(" expression ")"
                     | predicate
-                    | STRING_LITERAL
                     | INTEGER_CONSTANT
                     | IDENTIFIER
 ```
@@ -53,11 +51,7 @@ primary_expression ::= "(" expression ")"
 - Begin with a letter (a-z, A-Z) or underscore (_)
 - Followed by letters, digits, or underscores
 - Examples: `foo`, `bar_123`, `myPredicate`
-
-**String Literals**:
-- Enclosed in double quotes
-- May contain escape sequences
-- Examples: `"hello"`, `"value with spaces"`
+- Identifiers starting with uppercase are variables; lowercase are literals
 
 **Integer Constants**:
 - Decimal numbers
@@ -66,9 +60,8 @@ primary_expression ::= "(" expression ")"
 
 ### 4.4 Assignment Operations
 
-Gil uses the `≤` operator for assignments:
-- `predicate ≤ value`
-- `predicate ≤ value when condition`
+Gil uses the `<=` operator for assignments:
+- `predicate <= value`
 
 Assignment is non-blocking, collected during execution, then resolved and committed atomically.
 

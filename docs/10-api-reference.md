@@ -55,11 +55,13 @@ int gil_intent_execute(GilIntent *intent, GilFrontier *frontier,
 
 ### 11.5 Constants
 
-**Truth Values**:
+**Truth Values** (enum):
 ```c
-#define GIL_FALSE 0
-#define GIL_TRUE  1
-#define GIL_BOTH  2
+typedef enum {
+    GIL_FALSE = 0,
+    GIL_TRUE  = 1,
+    GIL_BOTH  = 2
+} GilVal;
 ```
 
 ### 11.6 Error Handling

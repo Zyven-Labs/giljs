@@ -2,5 +2,5 @@
 /build/
 *.o
 *.a
-test/test
+libgil/test/test
 node_modules/

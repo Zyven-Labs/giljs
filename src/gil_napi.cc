@@ -42,6 +42,9 @@ static bool parse_args(const Napi::CallbackInfo& info, int index,
         for (uint32_t i = 0; i < arr.Length(); i++) {
             Napi::Value elem = arr[i];
             if (!elem.IsString()) {
+                /* Emit a clear error. Do NOT free here: every caller already
+                   calls free_args() on the false path, so freeing here would
+                   double-free the previously strdup'd strings. */
                 Napi::TypeError::New(env, "each argument must be a string")
                     .ThrowAsJavaScriptException();
                 return false;
@@ -233,9 +236,10 @@ void Frontier::Set(const Napi::CallbackInfo& info)
     std::vector<const char*> args;
     int val_index;
 
-    /* Detect whether info[1] is the value (number, no pred args)
+    /* Detect whether info[1] is the value (number/boolean, no pred args)
        or predicate args (string/array, value at index 2). */
-    if (info.Length() > 1 && info[1].IsNumber()) {
+    if (info.Length() > 1 &&
+        (info[1].IsNumber() || info[1].IsBoolean())) {
         val_index = 1;
     } else {
         if (!parse_args(info, 1, args)) {
@@ -247,14 +251,28 @@ void Frontier::Set(const Napi::CallbackInfo& info)
 
     GilVal value = GIL_TRUE;
     if (info.Length() > (size_t)val_index) {
-        double v = info[val_index].As<Napi::Number>().DoubleValue();
-        if (v < 0 || v > 2) {
+        if (info[val_index].IsBoolean()) {
+            /* Accept the natural JS boolean form as a predicate value. */
+            value = info[val_index].As<Napi::Boolean>().Value()
+                        ? GIL_TRUE : GIL_FALSE;
+        } else if (info[val_index].IsNumber()) {
+            double v = info[val_index].As<Napi::Number>().DoubleValue();
+            /* Reject NaN and non-integral values (previously NaN folded to
+               garbage and 1.9 silently truncated to 1). */
+            if (!(v == 0.0 || v == 1.0 || v == 2.0)) {
+                free_args(args);
+                Napi::RangeError::New(env,
+                    "value must be 0 (FALSE), 1 (TRUE), 2 (BOTH), true, or false")
+                    .ThrowAsJavaScriptException();
+                return;
+            }
+            value = (GilVal)(int)v;
+        } else {
             free_args(args);
-            Napi::RangeError::New(env, "value must be 0 (FALSE), 1 (TRUE), or 2 (BOTH)")
+            Napi::TypeError::New(env, "value must be a number, boolean, or omitted")
                 .ThrowAsJavaScriptException();
             return;
         }
-        value = (GilVal)(int)v;
     }
 
     gil_frontier_set(frontier_, name.c_str(),

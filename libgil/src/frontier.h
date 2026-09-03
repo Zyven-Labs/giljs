@@ -10,7 +10,7 @@
 /* A single predicate entry in the frontier hash table.
    Strings are deep-copied and owned by the slot. */
 typedef struct {
-    const char *name;       /* predicate name; not owned             */
+    const char *name;       /* predicate name; owned, deep-copied          */
     char      **args;       /* argument array copies; OWNED          */
     size_t      argc;
     GilVal      value;

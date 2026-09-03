@@ -53,6 +53,34 @@ static int slot_copy_args(PredSlot *slot, const char *args[], size_t argc)
     return 0;
 }
 
+/* Re-hash the probe cluster after removing the entry at `hole` so that
+   entries displaced past the hole are shifted back into place. Without
+   this, later lookups stop early at the now-empty `hole` and fail to
+   find entries that hash to earlier slots in the same probe chain. */
+static void frontier_del_rehash(GilFrontier *f, size_t hole)
+{
+    size_t mask = f->capacity - 1;
+    size_t j = (hole + 1) & mask;
+    while (f->slots[j].occupied) {
+        size_t h = pred_hash(f->slots[j].name,
+            (const char**)f->slots[j].args, f->slots[j].argc) & mask;
+        size_t k;
+        int displaced = 0;
+        /* Entry j is displaced if any slot in (h, j) is empty. */
+        for (k = h; k != j; k = (k + 1) & mask) {
+            if (!f->slots[k].occupied) { displaced = 1; break; }
+        }
+        if (displaced) {
+            /* Shift entry j into the hole; the freed spot becomes the
+               new hole. */
+            f->slots[hole] = f->slots[j];
+            f->slots[j].occupied = 0;
+            hole = j;
+        }
+        j = (j + 1) & mask;
+    }
+}
+
 static void slot_free_pred(PredSlot *slot)
 {
     size_t i;
@@ -176,9 +204,13 @@ void gil_frontier_del(GilFrontier *f, const char *name,
     idx = pred_hash(name, args, argc) & (f->capacity - 1);
     while (f->slots[idx].occupied) {
         if (pred_eq(name, args, argc, &f->slots[idx])) {
+            size_t hole = idx;
             slot_free_pred(&f->slots[idx]);
             f->slots[idx].occupied = 0;
             f->count--;
+            /* Repair the probe chain so later lookups still find
+               entries displaced past the removed slot. */
+            frontier_del_rehash(f, hole);
             frontier_unlock(f);
             return;
         }

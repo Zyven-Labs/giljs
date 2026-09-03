@@ -40,7 +40,10 @@ GilResult gil_frontier_query(const GilFrontier *f, const char *name,
         if (strcmp(slot->name, name) != 0) continue;
         if (slot->argc != argc) continue;
 
-        /* Check all pattern args match slot args. */
+        /* Check all pattern args match slot args. Repeated uppercase
+           variable names must match equal concrete values (bug fix:
+           e.g. query('linked', ['A','A']) must only match args with
+           equal values, not any two equal-position slots). */
         {
             size_t j;
             int match = 1;
@@ -48,6 +51,19 @@ GilResult gil_frontier_query(const GilFrontier *f, const char *name,
                 if (!pat_match(pattern_args[j], slot->args[j])) {
                     match = 0;
                     break;
+                }
+                /* Enforce repeated-variable equality across positions. */
+                if (isupper((unsigned char)pattern_args[j][0])) {
+                    size_t k;
+                    for (k = j + 1; k < argc; k++) {
+                        if (isupper((unsigned char)pattern_args[k][0]) &&
+                            strcmp(pattern_args[j], pattern_args[k]) == 0 &&
+                            strcmp(slot->args[j], slot->args[k]) != 0) {
+                            match = 0;
+                            break;
+                        }
+                    }
+                    if (!match) break;
                 }
             }
             if (!match) continue;

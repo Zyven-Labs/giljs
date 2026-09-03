@@ -5,9 +5,9 @@
   "main": "lib/index.js",
   "gypfile": true,
   "scripts": {
-    "install": "node-gyp rebuild",
-    "build": "node-gyp rebuild",
-    "test": "cd libgil && make -s test && cd .. && node test/test.js"
+    "install": "make -C libgil && node-gyp rebuild",
+    "build": "make -C libgil && node-gyp rebuild",
+    "test": "cd libgil && make -s test && cd .. && node test/test.js && node test/regression_test_bugfixes.js && node test/regression_test_buffer_overflow.js && node test/regression_test_empty_args.js && node test/regression_test_intent_error.js && node test/regression_test_memory_leak.js && node test/regression_test_null_pointer.js"
   },
   "dependencies": {
     "node-addon-api": "^8.3.0"

@@ -18,7 +18,7 @@
  *   - Identifiers beginning with a lowercase letter are LITERAL CONSTANTS.
  *
  * Variables are bound by intent parameters or by pattern matching in when
- * clauses. An unbound variable error is reported at script load time.
+ * clauses. An unbound variable error is reported at execution time.
  *
  * --- Intent execution model ---
  * 1. Bind intent parameters from invocation arguments.

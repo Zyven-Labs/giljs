@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 
 /* ------------------------------------------------------------------ */
 /* Binding environment                                                */
@@ -133,7 +135,9 @@ static int assignbuf_add(AssignBuf *buf, const char *name,
     return 0;
 }
 
-/* Assignment resolution per spec Section 10 */
+/* Assignment resolution per spec Section 10.
+ * Explicitly handles all combinations; a default branch (via assertion)
+ * guards against future refactoring to a switch with a missing default. */
 static GilVal resolve_vals(GilVal a, GilVal b)
 {
     if (a == GIL_BOTH || b == GIL_BOTH) return GIL_BOTH;
@@ -183,14 +187,17 @@ static int is_var(const char *s) { return s && isupper((unsigned char)s[0]); }
 
 /* Strictly parse a decimal integer string into a long. Accepts an optional
    leading '+' or '-'. Returns 1 on success, 0 if the string is not a valid
-   integer. */
+   integer or overflows. */
 static int parse_long_strict(const char *s, long *out)
 {
     char *end = NULL;
     long v;
+    long saved_errno;
     if (!s || *s == '\0') return 0;
+    errno = 0;
     v = strtol(s, &end, 10);
-    if (end == s || *end != '\0') return 0;
+    saved_errno = errno;
+    if (end == s || *end != '\0' || saved_errno == ERANGE) return 0;
     *out = v;
     return 1;
 }
@@ -238,7 +245,10 @@ static int arg_eval(const Arg *a, Env *env, const char **out, int *out_owned)
         long l, r, v;
         int lr = arg_eval(a->u.binop.left, env, &ls, &lo);
         int rr;
-        if (lr != 0) return lr;
+        if (lr != 0) {
+            if (lo) free((void*)ls);
+            return lr;
+        }
         rr = arg_eval(a->u.binop.right, env, &rs, &ro);
         if (rr != 0) {
             if (lo) free((void*)ls);
@@ -254,10 +264,37 @@ static int arg_eval(const Arg *a, Env *env, const char **out, int *out_owned)
             if (ro) free((void*)rs);
             return -1;
         }
-        if (a->kind == ARG_ADD)      v = l + r;
-        else if (a->kind == ARG_SUB) v = l - r;
-        else if (a->kind == ARG_MUL) v = l * r;
-        else                         v = l / r;
+        if (a->kind == ARG_ADD) {
+            /* Overflow-safe addition. */
+            if ((r > 0 && l > (long)LONG_MAX - r) ||
+                (r < 0 && l < (long)LONG_MIN - r))
+                return -1;
+            v = l + r;
+        }
+        else if (a->kind == ARG_SUB) {
+            /* Overflow-safe subtraction. */
+            if ((r < 0 && l > (long)LONG_MAX + r) ||
+                (r > 0 && l < (long)LONG_MIN + r))
+                return -1;
+            v = l - r;
+        }
+        else if (a->kind == ARG_MUL) {
+            /* Overflow-safe multiplication using division-based check. */
+            if ((l == 1) || (r == 1))      v = l * r;
+            else if ((l == -1) || (r == -1)) v = -(l * r);
+            else if (l == 0 || r == 0)       v = 0;
+            else if (l > 0 && r > 0 && l > (long)LONG_MAX / r) return -1;
+            else if (l < 0 && r < 0 && l < (long)LONG_MIN / r) return -1;
+            else if (l > 0 && r < 0 && r < (long)LONG_MAX / l)  return -1;
+            else if (l < 0 && r > 0 && l < (long)LONG_MAX / r)  return -1;
+            else                                     v = l * r;
+        }
+        else {
+            /* DIV: r == 0 already handled; guard LONG_MIN / -1 which is
+               undefined behavior. */
+            if (r == -1 && l == (long)LONG_MIN) return -1;
+            v = l / r;
+        }
         if (lo) free((void*)ls);
         if (ro) free((void*)rs);
         {
@@ -569,8 +606,11 @@ static int exec_when(const Stmt *when, Env *outer_env,
 
                 env_copy(&test_env, outer_env);
                 for (vi = 0; vi < cond_vars.count; vi++)
-                    env_put(&test_env, cond_vars.names[vi],
-                            cands[vi][indices[vi]]);
+                    if (env_put(&test_env, cond_vars.names[vi],
+                            cands[vi][indices[vi]]) != 0) {
+                        free(indices);
+                        goto cleanup_cands;
+                    }
 
                 if (expr_eval(cond, &test_env, frontier, &result) != 0) {
                     free(indices);
@@ -714,8 +754,10 @@ int gil_intent_execute(GilIntent *intent, GilFrontier *frontier,
     env_init(&env);
     {
         int i;
-        for (i = 0; i < it->param_count; i++)
-            env_put(&env, it->params[i], args[i]);
+        for (i = 0; i < it->param_count; i++) {
+            if (env_put(&env, it->params[i], args[i]) != 0)
+                return -1;
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -773,12 +815,24 @@ int gil_intent_execute(GilIntent *intent, GilFrontier *frontier,
         if (!have_repeat) return 0;
     }
 
-    for (;;) {
+    /* Iterate to convergence, bounded to guarantee termination even for
+       oscillating programs (e.g. `repeat q <= not q end`). Without a cap
+       such programs loop forever; the cap also bounds worst-case cost. */
+    {
+        int iterations_left = 10000;
+        for (;;) {
         AssignBuf buf;
         size_t    i;
         int       changed = 0;
 
         assignbuf_init(&buf);
+
+        if (--iterations_left <= 0) {
+            /* Give up on convergence rather than hang. Leave the frontier
+               in its last committed state. */
+            assignbuf_free(&buf);
+            return 0;
+        }
 
         if (exec_repeat_bodies(it->stmts, it->stmt_count,
                                &env, frontier, &buf) != 0) {
@@ -813,5 +867,6 @@ int gil_intent_execute(GilIntent *intent, GilFrontier *frontier,
         assignbuf_free(&buf);
 
         if (!changed) return 0;
+        }
     }
 }

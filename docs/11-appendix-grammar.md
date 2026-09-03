@@ -18,13 +18,12 @@ statement          ::= assignment
                     | repeat_block
                     | expression
 
-assignment         ::= predicate "≤" expression
-                     | predicate "≤" expression "when" condition
+assignment         ::= predicate "<=" expression
 
 predicate          ::= IDENTIFIER ("[" argument_list "]")?
 
 argument_list      ::= argument ("," argument)* | epsilon
-argument           ::= STRING_LITERAL | IDENTIFIER | INTEGER_CONSTANT
+argument           ::= IDENTIFIER | INTEGER_CONSTANT
 
 when_block         ::= "when" expression "do" statement_list "end"
 repeat_block       ::= "repeat" statement_list "end"
@@ -36,11 +35,10 @@ not_expression     ::= "not" not_expression
                     | primary_expression
 primary_expression ::= "(" expression ")"
                     | predicate
-                    | STRING_LITERAL
                     | INTEGER_CONSTANT
                     | IDENTIFIER
 
-condition          ::= expression
+condition          ::= predicate ("[" argument_list "]")?
 ```
 
 ### A.2 Lexical Rules
@@ -49,10 +47,8 @@ condition          ::= expression
 - Start with letter or underscore
 - Followed by letters, digits, or underscores
 - Length limited by implementation
+- Uppercase-starting identifiers are variables; lowercase-starting are literals
 
-**String Literals**:
-- Enclosed in double quotes
-- Escape sequences supported (\n, \t, \", \\)
 
 **Integer Constants**:
 - Decimal representation only
@@ -80,3 +76,6 @@ The following words are reserved and cannot be used as identifiers:
 - `not`
 - `and`
 - `or`
+- `both`
+- `true`
+- `false`

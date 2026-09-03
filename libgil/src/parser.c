@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <limits.h>
 
 /* ------------------------------------------------------------------ */
 /* Error buffer                                                       */
@@ -139,19 +140,65 @@ static Arg* arg_new_var(const char *text)
 static Arg* arg_make_bin(int kind, Arg *l, Arg *r, int line, const char **error)
 {
     if (l->kind == ARG_LITERAL && r->kind == ARG_LITERAL) {
-        long lv = strtol(l->u.text, NULL, 10);
-        long rv = strtol(r->u.text, NULL, 10);
+        long lv, rv;
         long v;
         const char *s;
+        lv = strtol(l->u.text, NULL, 10);
+        rv = strtol(r->u.text, NULL, 10);
         if (kind == ARG_DIV && rv == 0) {
             arg_free(l); arg_free(r);
             *error = make_error(line, "division by zero");
             return NULL;
         }
-        if (kind == ARG_ADD)      v = lv + rv;
-        else if (kind == ARG_SUB) v = lv - rv;
-        else if (kind == ARG_MUL) v = lv * rv;
-        else                      v = lv / rv;
+        if (kind == ARG_ADD) {
+            if ((rv > 0 && lv > (long)LONG_MAX - rv) ||
+                (rv < 0 && lv < (long)LONG_MIN - rv)) {
+                arg_free(l); arg_free(r);
+                *error = make_error(line, "integer overflow");
+                return NULL;
+            }
+            v = lv + rv;
+        } else if (kind == ARG_SUB) {
+            if ((rv < 0 && lv > (long)LONG_MAX + rv) ||
+                (rv > 0 && lv < (long)LONG_MIN + rv)) {
+                arg_free(l); arg_free(r);
+                *error = make_error(line, "integer overflow");
+                return NULL;
+            }
+            v = lv - rv;
+        } else if (kind == ARG_MUL) {
+            if ((lv == 1) || (rv == 1))      v = lv * rv;
+            else if ((lv == -1) || (rv == -1)) v = -(lv * rv);
+            else if (lv == 0 || rv == 0)       v = 0;
+            else if (lv > 0 && rv > 0 && lv > (long)LONG_MAX / rv) {
+                arg_free(l); arg_free(r);
+                *error = make_error(line, "integer overflow");
+                return NULL;
+            }
+            else if (lv < 0 && rv < 0 && lv < (long)LONG_MIN / rv) {
+                arg_free(l); arg_free(r);
+                *error = make_error(line, "integer overflow");
+                return NULL;
+            }
+            else if (lv > 0 && rv < 0 && rv < (long)LONG_MAX / lv) {
+                arg_free(l); arg_free(r);
+                *error = make_error(line, "integer overflow");
+                return NULL;
+            }
+            else if (lv < 0 && rv > 0 && lv < (long)LONG_MAX / rv) {
+                arg_free(l); arg_free(r);
+                *error = make_error(line, "integer overflow");
+                return NULL;
+            }
+            else                                     v = lv * rv;
+        } else {
+            if (rv == -1 && lv == (long)LONG_MIN) {
+                arg_free(l); arg_free(r);
+                *error = make_error(line, "integer overflow");
+                return NULL;
+            }
+            v = lv / rv;
+        }
         s = intern_long(v);
         arg_free(l); arg_free(r);
         if (!s) { *error = make_error(line, "out of memory"); return NULL; }
@@ -447,32 +494,44 @@ static Stmt* parse_when(TokIter *it, Bindings *bindings,
     if (!body) { exp_free(cond);
         *error = make_error(LINE(it), "out of memory"); return NULL; }
 
-    while (tok_kind(it) != TOK_END) {
-        Stmt *child = parse_statement(it, bindings, 0, error);
-        if (!child) break;
-        if (body_count >= body_cap) {
-            body_cap *= 2;
-            {
-                Stmt *tmp = (Stmt*)realloc(body,
-                    (size_t)body_cap * sizeof(Stmt));
-                if (!tmp) {
-                    stmt_free_one(child); free(child); free(body);
-                    exp_free(cond);
-                    *error = make_error(LINE(it), "out of memory");
-                    return NULL;
-                }
-                body = tmp;
+    {
+        int desc_err = 0;
+        while (tok_kind(it) != TOK_END) {
+            Stmt *child = parse_statement(it, bindings, 0, error);
+            if (!child) {
+                /* A body statement failed and already set a specific error
+                   (e.g. "division by zero", "integer overflow"). Do not
+                   clobber it with the recovery message below. */
+                desc_err = 1;
+                break;
             }
+            if (body_count >= body_cap) {
+                body_cap *= 2;
+                {
+                    Stmt *tmp = (Stmt*)realloc(body,
+                        (size_t)body_cap * sizeof(Stmt));
+                    if (!tmp) {
+                        stmt_free_one(child); free(child); free(body);
+                        exp_free(cond);
+                        *error = make_error(LINE(it), "out of memory");
+                        return NULL;
+                    }
+                    body = tmp;
+                }
+            }
+            body[body_count++] = *child;
+            free(child);
         }
-        body[body_count++] = *child;
-        free(child);
-    }
-    if (!tok_expect(it, TOK_END)) {
-        int j;
-        for (j = 0; j < body_count; j++) stmt_free_one(&body[j]);
-        free(body); exp_free(cond);
-        *error = make_error(LINE(it), "expected 'end'");
-        return NULL;
+        if (tok_kind(it) == TOK_END) {
+            tok_eat(it);
+        } else {
+            if (!desc_err)
+                *error = make_error(LINE(it), "expected 'end'");
+            int j;
+            for (j = 0; j < body_count; j++) stmt_free_one(&body[j]);
+            free(body); exp_free(cond);
+            return NULL;
+        }
     }
 
     stmt = (Stmt*)calloc(1, sizeof(Stmt));
@@ -503,31 +562,43 @@ static Stmt* parse_repeat(TokIter *it, Bindings *bindings,
         return NULL;
     }
 
-    while (tok_kind(it) != TOK_END) {
-        Stmt *child = parse_statement(it, bindings, 0, error);
-        if (!child) break;
-        if (body_count >= body_cap) {
-            body_cap *= 2;
-            {
-                Stmt *tmp = (Stmt*)realloc(body,
-                    (size_t)body_cap * sizeof(Stmt));
-                if (!tmp) {
-                    stmt_free_one(child); free(child); free(body);
-                    *error = make_error(LINE(it), "out of memory");
-                    return NULL;
-                }
-                body = tmp;
+    {
+        int desc_err = 0;
+        while (tok_kind(it) != TOK_END) {
+            Stmt *child = parse_statement(it, bindings, 0, error);
+            if (!child) {
+                /* A body statement failed and already set a specific error
+                   (e.g. "division by zero", "integer overflow"). Do not
+                   clobber it with the recovery message below. */
+                desc_err = 1;
+                break;
             }
+            if (body_count >= body_cap) {
+                body_cap *= 2;
+                {
+                    Stmt *tmp = (Stmt*)realloc(body,
+                        (size_t)body_cap * sizeof(Stmt));
+                    if (!tmp) {
+                        stmt_free_one(child); free(child); free(body);
+                        *error = make_error(LINE(it), "out of memory");
+                        return NULL;
+                    }
+                    body = tmp;
+                }
+            }
+            body[body_count++] = *child;
+            free(child);
         }
-        body[body_count++] = *child;
-        free(child);
-    }
-    if (!tok_expect(it, TOK_END)) {
-        int j;
-        for (j = 0; j < body_count; j++) stmt_free_one(&body[j]);
-        free(body);
-        *error = make_error(LINE(it), "expected 'end'");
-        return NULL;
+        if (tok_kind(it) == TOK_END) {
+            tok_eat(it);
+        } else {
+            if (!desc_err)
+                *error = make_error(LINE(it), "expected 'end'");
+            int j;
+            for (j = 0; j < body_count; j++) stmt_free_one(&body[j]);
+            free(body);
+            return NULL;
+        }
     }
 
     stmt = (Stmt*)calloc(1, sizeof(Stmt));
@@ -662,30 +733,45 @@ static Intent* parse_intent(TokIter *it, const char **error)
     if (!stmts) { intent_free_one(intent); free(intent);
         *error = make_error(LINE(it), "out of memory"); return NULL; }
 
-    while (tok_kind(it) != TOK_END && tok_kind(it) != TOK_EOF) {
-        Stmt *child = parse_statement(it, &bindings, 1, error);
-        if (!child) break;
-        if (stmt_count >= stmt_cap) {
-            stmt_cap *= 2;
-            {
-                Stmt *t = (Stmt*)realloc(stmts,
-                    (size_t)stmt_cap * sizeof(Stmt));
-                if (!t) { stmt_free_one(child); free(child); free(stmts);
-                    intent_free_one(intent); free(intent);
-                    *error = make_error(LINE(it), "out of memory");
-                    return NULL; }
-                stmts = t;
+    {
+        int desc_err = 0;
+        while (tok_kind(it) != TOK_END && tok_kind(it) != TOK_EOF) {
+            Stmt *child = parse_statement(it, &bindings, 1, error);
+            if (!child) {
+                /* A statement parser failed. It already set a specific
+                   error (e.g. "division by zero", "integer overflow",
+                   "expected ')'"). Record that so we do not clobber it
+                   with a generic recovery message below. */
+                desc_err = 1;
+                break;
             }
+            if (stmt_count >= stmt_cap) {
+                stmt_cap *= 2;
+                {
+                    Stmt *t = (Stmt*)realloc(stmts,
+                        (size_t)stmt_cap * sizeof(Stmt));
+                    if (!t) { stmt_free_one(child); free(child); free(stmts);
+                        intent_free_one(intent); free(intent);
+                        *error = make_error(LINE(it), "out of memory");
+                        return NULL; }
+                    stmts = t;
+                }
+            }
+            stmts[stmt_count++] = *child;
+            free(child);
         }
-        stmts[stmt_count++] = *child;
-        free(child);
-    }
-    if (!tok_expect(it, TOK_END)) {
-        int j;
-        for (j = 0; j < stmt_count; j++) stmt_free_one(&stmts[j]);
-        free(stmts); intent_free_one(intent); free(intent);
-        *error = make_error(LINE(it), "expected 'end' to close intent");
-        return NULL;
+
+        if (tok_kind(it) == TOK_END) {
+            tok_eat(it);
+        } else {
+            int j;
+            /* Statement parsing stopped without reaching 'end'. */
+            if (!desc_err)
+                *error = make_error(LINE(it), "expected 'end' to close intent");
+            for (j = 0; j < stmt_count; j++) stmt_free_one(&stmts[j]);
+            free(stmts); intent_free_one(intent); free(intent);
+            return NULL;
+        }
     }
 
     intent->stmt_count = stmt_count;

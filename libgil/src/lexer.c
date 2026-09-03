@@ -37,7 +37,7 @@ static int tokenlist_push(TokenList *list, int kind, int line,
 static const char* lex_keyword(const char *s, size_t len)
 {
     /* Gil keywords in alphabetical order, for linear scan.
-       Table is small enough (9 keywords) that a loop is fine. */
+       Table is small enough (11 keywords) that a loop is fine. */
     static const char *keywords[] = {
         "and", "both", "do", "end",
         "false", "intent", "not", "or",

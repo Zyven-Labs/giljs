@@ -29,7 +29,7 @@ Gil implementations return detailed error information:
 Key performance aspects include:
 - Hash table lookups for O(1) average predicate access
 - Efficient parsing and compilation stages
-- Minimal memory allocation during execution
+- Dynamic memory allocation during intent execution (assignment buffers, condition candidate collections)
 - Optimized convergence algorithms
 
 ### 8.5 Implementation Requirements

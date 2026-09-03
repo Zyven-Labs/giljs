@@ -848,6 +848,368 @@ static void test_when_predicate_guard(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Section: Arbitrary expressions in when-block conditions            */
+/* ------------------------------------------------------------------ */
+
+static void test_when_not_condition(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("exec: when NOT(p[A]) — body executes for non-matching frontier");
+
+    s = gil_load(
+        "intent t() when not flag do p <= true end end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "flag", NULL, 0, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_FALSE,
+              "p when not flag with flag=true");
+    gil_frontier_free(f);
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "flag", NULL, 0, GIL_FALSE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_TRUE,
+              "p when not flag with flag=false");
+    gil_frontier_free(f);
+
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_and_condition(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"Alice"};
+    const char *a2[] = {"Bob"};
+    TEST("exec: when p[A] and q[A] — body when both true");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when activated[A] and friends[A] do\n"
+        "            p[A] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "activated", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "friends", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "activated", a2, 1, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_TRUE,
+              "p[Alice]: both activated and friends");
+    CHECK_VAL(gil_frontier_get(f, "p", a2, 1), GIL_FALSE,
+              "p[Bob]: activated but not friends");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_or_condition(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"Alice"};
+    const char *a2[] = {"Bob"};
+    TEST("exec: when p[A] or q[A] — body when at least one true");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when activated[A] or friends[A] do\n"
+        "            p[A] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "activated", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "friends", a2, 1, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_TRUE,
+              "p[Alice]: activated or friends (OR match)");
+    CHECK_VAL(gil_frontier_get(f, "p", a2, 1), GIL_TRUE,
+              "p[Bob]: friends but not activated (OR match)");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_not_and_condition(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"Alice"};
+    TEST("exec: when not p[A] and q[A] — NOT binds tighter than AND");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when not activated[A] and friends[A] do\n"
+        "            p[A] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "activated", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "friends", a1, 1, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_FALSE,
+              "p[Alice]: (not true) and true = false");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_parens_override_precedence(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"Alice"};
+    TEST("exec: when (p[A] or q[A]) and r[A] — parentheses override");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when (activated[A] or friends[A]) and connected[A] do\n"
+        "            p[A] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "activated", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "connected", a1, 1, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_TRUE,
+              "p[Alice]: (activated or friends) and connected");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_or_and_short_circuit(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"Alice"};
+    const char *a2[] = {"Bob"};
+    TEST("exec: when p[A] or q[B] — independent vars across OR");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when activated[A] or friends[B] do\n"
+        "            p[A] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "activated", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "friends", a2, 1, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_TRUE,
+              "p[Alice]: activated[Alice] or friends[Bob] => true");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_const_false_no_execute(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("exec: when true and false do => body never executes");
+
+    s = gil_load(
+        "intent t() when true and false do p <= true end end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_FALSE,
+              "p should stay false when condition is always false");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_const_true_always_executes(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("exec: when true or false do => body always executes");
+
+    s = gil_load(
+        "intent t() when true or false do p <= true end end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_TRUE,
+              "p should be true when condition is always true");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_nested_negation(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    TEST("exec: when not not p[A] — double negation");
+
+    s = gil_load(
+        "intent t() when not not flag do p <= true end end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "flag", NULL, 0, GIL_TRUE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_TRUE,
+              "p when not not flag with flag=true");
+    gil_frontier_free(f);
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "flag", NULL, 0, GIL_FALSE);
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", NULL, 0), GIL_FALSE,
+              "p when not not flag with flag=false");
+    gil_frontier_free(f);
+
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_complex_expression(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *a1[] = {"Alice"};
+    const char *a2[] = {"Bob"};
+    const char *a3[] = {"Carol"};
+    TEST("exec: when not p[A] and (q[A] or r[A]) — complex compound");
+
+    s = gil_load(
+        "intent t()\n"
+        "    repeat\n"
+        "        when not activated[A] and (friends[A] or connected[A]) do\n"
+        "            p[A] <= true\n"
+        "        end\n"
+        "    end\n"
+        "end\n", NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "activated", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "friends", a1, 1, GIL_TRUE);
+    gil_frontier_set(f, "connected", a2, 1, GIL_TRUE);
+    gil_frontier_set(f, "friends", a3, 1, GIL_TRUE);
+
+    rc = gil_intent_execute(in, f, NULL, 0);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", a1, 1), GIL_FALSE,
+              "p[Alice]: not activated=true => skip");
+    CHECK_VAL(gil_frontier_get(f, "p", a2, 1), GIL_TRUE,
+              "p[Bob]: not activated[Bob] and connected[Bob]");
+    CHECK_VAL(gil_frontier_get(f, "p", a3, 1), GIL_TRUE,
+              "p[Carol]: not activated[Carol] and friends[Carol]");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+static void test_when_when_bound_param_no_bruteforce(void)
+{
+    GilScript *s;
+    GilIntent *in;
+    GilFrontier *f;
+    int rc;
+    const char *alice[] = {"Alice"};
+    TEST("exec: when-block with intent param — no brute-force on bound var");
+
+    s = gil_load(
+        "intent t(Node) when activated[Node] do p[Node] <= true end end\n",
+        NULL);
+    CHECK(s != NULL, "load failed");
+    in = gil_intent_get(s, "t");
+    CHECK(in != NULL, "intent not found");
+
+    f = gil_frontier_new(NULL);
+    gil_frontier_set(f, "activated", alice, 1, GIL_TRUE);
+    rc = gil_intent_execute(in, f, alice, 1);
+    CHECK(rc == 0, "exec should succeed");
+    CHECK_VAL(gil_frontier_get(f, "p", alice, 1),
+              GIL_TRUE, "p[Alice] via bound param");
+    gil_frontier_free(f);
+    gil_script_free(s);
+    OK();
+}
+
+/* ------------------------------------------------------------------ */
 /* Section: propagate_active (spec section 13)                        */
 /* ------------------------------------------------------------------ */
 
@@ -1912,6 +2274,19 @@ test_exec_param_as_predicate_name();
     test_when_guard_true();
     test_when_guard_false();
     test_when_predicate_guard();
+
+    printf("\n--- Arbitrary expressions in when-block conditions ---\n");
+    test_when_not_condition();
+    test_when_and_condition();
+    test_when_or_condition();
+    test_when_not_and_condition();
+    test_when_parens_override_precedence();
+    test_when_or_and_short_circuit();
+    test_when_const_false_no_execute();
+    test_when_const_true_always_executes();
+    test_when_nested_negation();
+    test_when_complex_expression();
+    test_when_when_bound_param_no_bruteforce();
 
     printf("\n--- Spec example: propagate_active ---\n");
     test_propagate_active();
